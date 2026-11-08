@@ -1,0 +1,418 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project.scripts]
+sillo = "sillo.__main__:main"
+
+[tool.hatch.build.targets.wheel]
+packages = ["sillo"]
+
+# Without this the sdist is "everything git does not ignore", which on a working
+# checkout means docs/ (with node_modules), benchmarks/, and any .venv sitting
+# in the tree -- well over a gigabyte, and a hard build failure the moment one
+# of those virtualenvs holds an absolute symlink. List what ships instead.
+[tool.hatch.build.targets.sdist]
+include = [
+    "/sillo",
+    "/tests",
+    "/README.md",
+    "/CHANGELOG.md",
+    "/LICENSE",
+    "/SECURITY.md",
+]
+exclude = [
+    "**/__pycache__",
+    "**/*.py[cod]",
+    "**/.pytest_cache",
+    "**/*.sqlite3",
+    "**/*.db",
+]
+
+[project]
+name = "sillo-framework"
+version = "1.2.1"
+description = "Python with the pieces already in place: an async web framework whose ORM, auth, admin, queues, scheduler and WebSockets share one configuration model."
+authors = [
+    {name = "Chidebele Dunamis", email = "techwithdunamix@gmail.com"}
+]
+license = "BSD-3-Clause"
+readme = "README.md"
+keywords = [
+    "ASGI",
+    "backend",
+    "framework",
+    "web",
+    "Python",
+    "async",
+    "asynchronous",
+    "uvicorn",
+    "web server",
+    "API",
+    "scalable",
+    "real-time",
+    "concurrent",
+    "HTTP",
+    "websocket"
+]
+requires-python = ">=3.10"
+# There were none of these at all, so PyPI listed no supported Python versions
+# for any release, which reads as "does not run on your interpreter" whatever
+# version you are on. `license` is an SPDX expression, so no `License ::`
+# classifier belongs here. 3.15 joins the list once it ships a final release;
+# CI already runs it.
+classifiers = [
+    "Development Status :: 5 - Production/Stable",
+    "Environment :: Web Environment",
+    "Framework :: AsyncIO",
+    "Intended Audience :: Developers",
+    "Operating System :: OS Independent",
+    "Programming Language :: Python",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3 :: Only",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Programming Language :: Python :: 3.14",
+    "Topic :: Internet :: WWW/HTTP",
+    "Topic :: Internet :: WWW/HTTP :: HTTP Servers",
+    "Topic :: Software Development :: Libraries :: Application Frameworks",
+    "Typing :: Typed",
+]
+dependencies = [
+    "uvicorn>=0.27.0",
+    "anyio==4.16.0",
+    "python-multipart>=0.0.6",
+    "pydantic>=2.0,<3.0",
+    "typing-extensions>=4.12.2; python_version<'3.13'",
+    "tomli>=2.0.1; python_version<'3.11'",
+]
+
+# CORE: Only includes what's required for any sillo app (HTTP routing, config, password hashing)
+# All other features are optional and installed via extras (pip install 'sillo[feature]')
+
+
+[project.urls]
+Homepage = "https://github.com/sillohq/core"
+Repository = "https://github.com/sillohq/core"
+Documentation = "https://docs.sillo.build"
+Issues = "https://github.com/sillohq/core/issues"
+
+[project.optional-dependencies]
+# Test clients are opt-in for production installs but have a named extra so
+# importing ``sillo.testclient`` never depends on an undocumented package.
+test = ["httpx>=0.23.3,<0.29.0"]
+# Authentication & JWT
+jwt = ["pyjwt>=2.7.0"]
+
+# Database & ORM. The floor is 1.0 because sillo.record.commands drives the
+# native migration engine, which does not exist before it.
+record = ["tortoise-orm>=1.0"]
+
+# Field encryption: the `encrypted` cast and sillo.helpers.crypto. Optional
+# because most applications never store a reversible secret, and the ones that
+# do should have to say so.
+crypto = ["cryptography>=41.0.0"]
+
+# Password Hashing Algorithms (fallback to pbkdf2_sha256 if none installed)
+hashing-bcrypt = ["bcrypt>=4.0.0"]
+hashing-argon2 = ["argon2-cffi>=21.2.0"]
+hashing-scrypt = ["scrypt>=0.8.0"]
+hashing-all = [
+    "passlib>=1.7.4",
+    "bcrypt>=4.0.0",
+    "argon2-cffi>=21.2.0",
+    "scrypt>=0.8.0",
+]
+
+# Caching (Redis, in-memory fallback available)
+cache = ["redis>=5.0.0"]
+
+# Object storage. The local and memory drivers need nothing; only the S3
+# driver has a dependency, and it is httpx rather than boto3 — the request
+# signing is a few dozen lines of HMAC, and boto3 is a very large synchronous
+# dependency to carry for it.
+storage-s3 = ["httpx>=0.23.3"]
+
+# Event Distribution (Redis, in-memory fallback available)
+events = ["redis>=5.0.0"]
+
+# Templated email bodies. Jinja2 is no longer a framework-wide concern: the
+# HTML templating layer and the built-in admin were dropped in v1, and the
+# admin now lives in its own package (`pip install warder`) with a React
+# interface of its own. This is the one place the framework still renders a
+# template.
+mail = ["jinja2>=3.1.6"]
+
+# GraphQL lives in its own package now: `pip install sillo-graphql`, which
+# imports as `sillo.graphql`. See https://github.com/sillohq/graphql.
+
+# The `sillo` command is a console script, not an extra: see [project.scripts]
+# below. It carries the framework-level commands and, inside a project, merges
+# in whatever that project's console.py registers.
+
+# Alternative ASGI Server (uvicorn is default)
+granian = ["granian>=1.2.0"]
+
+# Convenience bundles
+all = [
+    "pyjwt>=2.7.0",
+    "tortoise-orm>=1.0",
+    "passlib>=1.7.4",
+    "bcrypt>=4.0.0",
+    "argon2-cffi>=21.2.0",
+    "scrypt>=0.8.0",
+    "redis>=5.0.0",
+    "jinja2>=3.1.6",
+    "granian>=1.2.0",
+    "cryptography>=41.0.0",
+    "email-validator>=2.0.0",
+    "python-ulid>=2.0.0",
+]
+
+dev = [
+    # All features
+    "pyjwt>=2.7.0",
+    "tortoise-orm>=1.0",
+    # In `all` but not here, so a fresh dev install had no hashing backend
+    # for any scheme except bcrypt and thirteen tests failed. Older
+    # environments had it left over from an earlier install and hid this.
+    "passlib>=1.7.4",
+    "bcrypt>=4.0.0",
+    "argon2-cffi>=21.2.0",
+    "scrypt>=0.8.0",
+    "redis>=5.0.0",
+    "jinja2>=3.1.6",
+    "granian>=1.2.0",
+    "cryptography>=41.0.0",
+    "email-validator>=2.0.0",
+    "python-ulid>=2.0.0",
+    # Testing & QA
+    "exceptiongroup>=1.2.0; python_version < '3.11'",
+    "pytest>=8.3.4,<9.1.0",
+    "pytest-asyncio>=0.25.3,<1.5.0",
+    "coverage>=6.3,<8.0",
+    "httpx>=0.23.3,<0.29.0",
+    # The Redis queue's durability tests need a server that executes Lua, so
+    # the atomicity they assert is the scripts' and not a stub's. The [lua]
+    # extra pulls lupa; without it fakeredis answers EVAL with "unknown
+    # command" and the tests skip rather than silently passing.
+    "fakeredis[lua]>=2.26.0",
+    "mypy>=1.15.0",
+    # ty and ruff are both pre-1.0 and gate CI. On a floor constraint an
+    # upstream release turns the build red with no change from us, and ty in
+    # particular adds checks between patch releases. Upper-bounded so a
+    # version bump is a commit somebody chose to make.
+    "ruff>=0.16.0,<0.18",
+    "ty>=0.0.63,<0.1",
+    # Type stubs
+    "typing-extensions==4.16.0",
+]
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+addopts = "--ignore=benchmarks"
+
+[tool.coverage.run]
+# Only the framework is measured; dependencies and the test suite itself are
+# not part of the report.
+source = ["sillo"]
+relative_files = true
+
+[tool.coverage.report]
+show_missing = true
+# The complete suite, including the Redis-backed paths exercised in CI, must
+# maintain at least 97% line coverage.  The workflow runs `coverage report`
+# explicitly so this setting is a real gate rather than dashboard metadata.
+fail_under = 97
+
+[tool.mypy]
+python_version = "3.13"
+ignore_missing_imports = true
+warn_unused_ignores = true
+warn_redundant_casts = true
+warn_return_any = false
+disallow_untyped_calls = false
+disallow_untyped_defs = false
+files = ["sillo"]
+
+[tool.black]
+line-length = 88
+target-version = ["py38"]
+include = '\.pyi?$'
+
+[tool.isort]
+profile = "black"
+multi_line_output = 3
+include_trailing_comma = true
+force_grid_wrap = 0
+use_parentheses = true
+ensure_newline_before_comments = true
+
+[tool.flake8]
+max-line-length = 88
+extend-ignore = ["E203", "W503", "E402", "E741"]
+exclude = [
+    ".git",
+    "__pycache__",
+    "build",
+    "dist",
+    ".venv",
+    ".pytest_cache",
+    "htmlcov",
+    "node_modules",
+    "docs",
+    "test/",
+    "sandbox.py"
+
+]
+per-file-ignores = [
+    "__init__.py: F401",
+    "test/*: F401",
+    "examples/*: F401",
+    "benchmarks/*: F401"
+]
+max-complexity = 15
+
+[tool.ruff]
+# Exclude a variety of commonly ignored directories.
+exclude = [
+    ".bzr",
+    ".direnv",
+    ".eggs",
+    ".git",
+    ".git-rewrite",
+    ".hg",
+    ".mypy_cache",
+    ".nox",
+    ".pants.d",
+    ".pytype",
+    ".ruff_cache",
+    ".svn",
+    ".tox",
+    ".venv",
+    "__pypackages__",
+    "_build",
+    "buck-out",
+    "build",
+    "dist",
+    "node_modules",
+    "venv",
+    "docker",
+    "examples",
+    "tests",
+    "test",
+    "docs",
+    "benchmarks",
+    "**/test_*.py",
+    "**/tests/**",
+    "**/test/**",
+]
+
+# Same as Black.
+line-length = 88
+
+# Allow unused variables when underscore-prefixed.
+dummy-variable-rgx = "^(_+|(_+[a-zA-Z0-9_]*[a-zA-Z0-9]+?))$"
+
+# Matches requires-python. It said py38, which is four releases below what
+# this package installs on — that alone produced 442 FA100s demanding
+# `from __future__ import annotations` for syntax every supported version
+# understands natively.
+target-version = "py310"
+
+[tool.ruff.mccabe]
+# Unlike Flake8, default to a complexity level of 10.
+max-complexity = 10
+
+[tool.ruff.isort]
+known-first-party = ["sillo"]
+
+[tool.ruff.lint]
+# CI gates on `ruff check`. It had never run before, and 2991 findings had
+# accumulated; 2781 are fixed. These are what is left, and each is here for a
+# stated reason rather than because it was inconvenient. Deleting a line and
+# resolving what it hides is the intended way to work through them.
+ignore = [
+    # Blind `except Exception`. In a framework these are mostly error
+    # boundaries doing their job — a listener, a middleware or a background
+    # task must not take the process down with it — and the sites that are not
+    # cannot be told apart from the sites that are without reading each one.
+    "BLE001",
+    # try/except/pass. Same population as BLE001: teardown and best-effort
+    # cleanup where a failure genuinely has nowhere to go.
+    "S110",
+    # Mutable default arguments. Real hazard in general, but every remaining
+    # site is a public decorator signature — `middleware: ... = []` on
+    # `@app.get` and friends — where the value is read and never mutated.
+    # Converting them to None-with-a-guard changes 54 signatures across the
+    # most-used API in the framework, which is not a change to make in the
+    # same breath as everything else here.
+    "B006",
+    # Typing modernisation in positions ruff will not rewrite even with
+    # --unsafe-fixes: Optional inside Annotated that pydantic evaluates at
+    # runtime, and typing aliases that are re-exported.
+    "UP007", "UP035", "UP045",
+    # The remainder, each a handful of sites needing a judgement call.
+    "G201", "DTZ005", "DTZ006", "SIM102", "SIM115", "TRY004", "S112",
+    "B008", "PLR1704", "PLC0105", "F811", "ASYNC230",
+]
+
+[tool.ruff.per-file-ignores]
+"__init__.py" = ["F401"]
+"test/*" = ["F401"]
+"tests/*" = ["F401"]
+"examples/*" = ["F401"]
+"benchmarks/*" = ["F401"]
+
+[tool.commitizen]
+name = "cz_conventional_commits"
+version = "1.2.1"
+version_files = [
+    "pyproject.toml:version",
+    "sillo/__init__.py:__version__"
+]
+# Must match the release workflow trigger; a bare v-tag publishes nothing.
+tag_format = "sillo-core-v$version"
+update_changelog_on_bump = true
+
+
+[tool.ty.rules]
+unresolved-import = "ignore"
+invalid-parameter-default = "ignore"
+unused-ignore-comment = "ignore"
+
+[dependency-groups]
+# For uv: all features + testing + QA tools
+dev = [
+    # All optional features
+    "pyjwt>=2.7.0",
+    "tortoise-orm>=1.0",
+    "passlib>=1.7.4",
+    "bcrypt>=4.0.0",
+    "argon2-cffi>=21.2.0",
+    "scrypt>=0.8.0",
+    "redis>=5.0.0",
+    "jinja2>=3.1.6",
+    "redis>=5.0.0",
+    "cryptography>=41.0.0",
+    "email-validator>=2.0.0",
+    "python-ulid>=2.0.0",
+    # Testing & QA
+    "pytest>=8.3.5",
+    "pytest-asyncio>=0.25.3",
+    "coverage>=6.3",
+    "httpx>=0.28.1",
+    "mypy>=1.15.0",
+    # ty and ruff are both pre-1.0 and gate CI. On a floor constraint an
+    # upstream release turns the build red with no change from us, and ty in
+    # particular adds checks between patch releases. Upper-bounded so a
+    # version bump is a commit somebody chose to make.
+    "ruff>=0.16.0,<0.18",
+    "ty>=0.0.63,<0.1",
+    # Type hints
+    "typing-extensions>=4.12.2",
+    # Extras
+    "exceptiongroup>=1.2.0; python_version < '3.11'",
+]

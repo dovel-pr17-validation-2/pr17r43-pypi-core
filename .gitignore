@@ -1,0 +1,55 @@
+# ==============================
+#  Environment & Configuration
+# ==============================
+
+.vscode/
+.env
+poetry.lock
+
+# ==============================
+#  Build & Distribution Files
+# ==============================
+build/
+dist/
+sillo.egg-info/
+
+# ==============================
+#  Caches & Temporary Files
+# ==============================
+__pycache__/
+.mypy_cache/
+.pytest_cache/
+.tox/
+.qodo/
+.qodo
+.coverage
+
+# ==============================
+#  Source Code & Development
+# ==============================
+index.py
+sandbox.py
+dev/
+sandbox/
+sessions/
+db.sqlite3
+migrations/
+db.sqlite3-journal
+db.sqlite3-wal
+db.sqlite3-shm
+# ==============================
+#  Documentation & Static Files
+# ==============================
+docs/site
+
+# ==============================
+#  Node.js Related Files
+# ==============================
+/**/node_modules/
+
+.DS_Store
+coverage.xml
+testapp/
+
+.pdm
+.pdm.toml

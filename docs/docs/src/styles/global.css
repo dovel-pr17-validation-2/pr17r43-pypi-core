@@ -1,0 +1,296 @@
+/* Fontsource variable fonts: Instrument Sans (body) + Geist Mono (code) */
+@import '@fontsource-variable/instrument-sans';
+@import '@fontsource-variable/geist-mono';
+
+:root {
+	/* Body prose renders in Instrument Sans; code/mono keeps Geist Mono */
+	--sl-font: 'Instrument Sans Variable', ui-sans-serif, system-ui, -apple-system, 'Segoe UI',
+		Roboto, 'Helvetica Neue', Arial, sans-serif;
+	--sl-font-mono: 'Geist Mono Variable', ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas,
+		'Liberation Mono', monospace;
+
+	/* Sillo brand palette, shared with the marketing site. */
+	--sillo-primary: #fc0345;
+	--sillo-primary-bright: #ff285f;
+	--sillo-primary-dark: #c00236;
+	--sillo-redis: #dc382d;
+	--sillo-bg: #050505;
+	--sillo-elevated: #0b0b0c;
+	--sillo-surface: #111112;
+	--sillo-surface-2: #171719;
+	--sillo-text: #f7f7f5;
+	--sillo-muted: #8b8b91;
+	--sillo-dimmed: #55555b;
+	--sillo-border: rgba(255, 255, 255, 0.1);
+	--sillo-border-strong: rgba(255, 255, 255, 0.16);
+
+	--sl-color-accent-low: #3a0010;
+	--sl-color-accent: var(--sillo-primary);
+	--sl-color-accent-high: #ffd7e0;
+	--sl-color-white: var(--sillo-text);
+	--sl-color-gray-1: #f7f7f5;
+	--sl-color-gray-2: #d8d8d4;
+	--sl-color-gray-3: #a7a7ad;
+	--sl-color-gray-4: var(--sillo-muted);
+	--sl-color-gray-5: var(--sillo-dimmed);
+	--sl-color-gray-6: var(--sillo-surface-2);
+	--sl-color-black: var(--sillo-bg);
+	--sl-color-bg: var(--sillo-bg);
+	--sl-color-bg-nav: rgba(5, 5, 5, 0.82);
+	--sl-color-bg-sidebar: var(--sillo-bg);
+	--sl-color-bg-inline-code: rgba(252, 3, 69, 0.12);
+	--sl-color-hairline-light: var(--sillo-border);
+	--sl-color-hairline: var(--sillo-border);
+	--sl-color-hairline-shade: rgba(0, 0, 0, 0.5);
+
+	/*
+	 * lucode-starlight's own tokens. They are declared inside @layer lucode, so
+	 * these unlayered values win in both themes without !important — and
+	 * because each points at a --sillo-* variable that is itself redefined
+	 * under [data-theme='light'], one declaration covers both.
+	 *
+	 * --background matters beyond colour: the sidebar's top and bottom fades
+	 * are gradients to it, so while it was neutral-950 and the page was
+	 * #050505 the fades ended in a visible lighter band.
+	 */
+	--background: var(--sillo-bg);
+	--foreground: var(--sillo-text);
+	--border: var(--sillo-border);
+	--muted-foreground: var(--sillo-muted);
+
+	/* Sidebar. The component defaults each of these to a neutral. */
+	--sidebar-marker-color: var(--sillo-primary);
+	--sidebar-rail-color: var(--sillo-border);
+	--sidebar-link-color: var(--sillo-muted);
+	--sidebar-group-color: var(--sillo-muted);
+	--sidebar-current-background: rgba(252, 3, 69, 0.09);
+}
+
+:root[data-theme='light'] {
+	--sillo-bg: #fafafa;
+	--sillo-elevated: #f5f5f5;
+	--sillo-surface: #efefef;
+	--sillo-surface-2: #e5e5e5;
+	--sillo-text: #1a1a1a;
+	--sillo-muted: #6b6b6b;
+	--sillo-dimmed: #a3a3a3;
+	--sillo-border: rgba(0, 0, 0, 0.08);
+	--sillo-border-strong: rgba(0, 0, 0, 0.14);
+
+	--sl-color-accent-low: #ffe3e8;
+	--sl-color-accent: var(--sillo-primary);
+	--sl-color-accent-high: #8f001f;
+	--sl-color-white: var(--sillo-text);
+	--sl-color-gray-1: #1a1a1a;
+	--sl-color-gray-2: #404040;
+	--sl-color-gray-3: #6b6b6b;
+	--sl-color-gray-4: var(--sillo-muted);
+	--sl-color-gray-5: var(--sillo-dimmed);
+	--sl-color-gray-6: var(--sillo-surface-2);
+	--sl-color-black: var(--sillo-bg);
+	--sl-color-bg: var(--sillo-bg);
+	--sl-color-bg-nav: rgba(250, 250, 250, 0.88);
+	--sl-color-bg-sidebar: var(--sillo-bg);
+	--sl-color-bg-inline-code: rgba(252, 3, 69, 0.08);
+	--sl-color-hairline-light: var(--sillo-border);
+	--sl-color-hairline: var(--sillo-border);
+	--sl-color-hairline-shade: rgba(0, 0, 0, 0.12);
+}
+
+/* Bump the base font size a bit (16px -> 17px) so all rem-based text scales up slightly */
+html {
+	font-size: 17px;
+	background: var(--sillo-bg);
+	color: var(--sillo-text);
+}
+
+body {
+	background:
+		radial-gradient(ellipse 50% 35% at 80% 0%, rgba(252, 3, 69, 0.08), transparent 65%),
+		var(--sillo-bg);
+}
+
+:root[data-theme='light'] body {
+	background: var(--sillo-bg);
+}
+
+::selection {
+	background: var(--sillo-primary);
+	color: white;
+}
+
+a {
+	text-decoration-color: rgba(252, 3, 69, 0.45);
+}
+
+a:hover {
+	color: var(--sillo-primary-bright);
+}
+
+/*
+ * The top bar reads as a bar.
+ *
+ * PageFrame paints its own opaque <header>; this replaces that with the
+ * translucent nav ground plus a hairline, so the bar is distinct from the page
+ * without cutting a hard block across it. `--sl-color-bg-nav` is already
+ * defined per theme above, so one declaration covers both.
+ *
+ * The header is sticky, so the blur is what keeps content legible as it
+ * scrolls underneath rather than showing through.
+ */
+[data-slot='layout'] > header {
+    background: var(--sl-color-bg-nav) !important;
+    backdrop-filter: blur(14px) saturate(180%) !important;
+    -webkit-backdrop-filter: blur(14px) saturate(180%) !important;
+}
+
+/*
+ * Sidebar group headings wrap now that some are two words long
+ * ("Architecture & Foundations", "Dependency Injection & Validation"), and the
+ * theme sets `line-height: 1` on them — which is fine for one line and collides
+ * the ascenders and descenders of two. Only the leading is changed; the size,
+ * tracking and colour stay the theme's.
+ */
+.sidebar .entry-title {
+    line-height: 1.35;
+    text-wrap: balance;
+}
+
+/*
+ * The header is two rows now: the bar, and the section tabs beneath it.
+ *
+ * `--header-height` is the theme's single source of truth for how far down the
+ * page starts — base.css positions the sidebar at `top: calc(var(--header-height)
+ * + 1px)` and sizes it `calc(100vh - var(--header-height) - 1px)`, and
+ * PageSidebar does the same for the table of contents. Redefining it as the sum
+ * of both rows moves all four of those together, so nothing ends up underneath
+ * the tabs. customCss is unlayered and the theme's value lives in `@layer
+ * lucode`, so this wins without `!important`.
+ */
+:root {
+    --sillo-bar-height: calc(var(--spacing) * 14);
+    --sillo-subnav-height: calc(var(--spacing) * 11);
+    --header-height: calc(var(--sillo-bar-height) + var(--sillo-subnav-height));
+}
+
+/*
+ * The theme centres the header slot in a fixed-height flex row, which would put
+ * the two rows side by side. Blocking it out hands the vertical split to
+ * src/components/Header, which owns both rows.
+ */
+[data-slot='layout'] > header .container {
+    display: block !important;
+}
+
+/* The bottom edge belongs to the section tabs, so the header itself must not
+   also draw one — otherwise the two stack into a double rule. */
+[data-slot='layout'] > header {
+    border-bottom: none !important;
+}
+
+.sidebar-pane,
+.right-sidebar,
+.main-pane {
+	border-color: var(--sillo-border) !important;
+}
+
+/*
+ * The sidebar itself is lucode-starlight's override, not Starlight's own, and
+ * it is themed entirely through the --sidebar-* variables set above. Rules
+ * targeting .sidebar-content used to live here and matched nothing: that class
+ * only appears in the default sidebar, which this site never renders.
+ */
+:root[data-theme='light'] {
+	--sidebar-current-background: rgba(252, 3, 69, 0.07);
+}
+
+.sl-markdown-content h1,
+.sl-markdown-content h2,
+.sl-markdown-content h3 {
+	letter-spacing: -0.045em;
+}
+
+.sl-markdown-content h1 {
+	font-size: clamp(2.6rem, 5vw, 4.6rem);
+	line-height: 0.98;
+}
+
+.sl-markdown-content h2 {
+	border-top-color: var(--sillo-border);
+}
+
+.sl-markdown-content code:not(:where(pre *)) {
+	border: 1px solid rgba(252, 3, 69, 0.18);
+	border-radius: 0.35rem;
+	background: rgba(252, 3, 69, 0.1);
+	color: #ffd7e0;
+	font-family: var(--sl-font-mono);
+}
+
+:root[data-theme='light'] .sl-markdown-content code:not(:where(pre *)) {
+	background: rgba(252, 3, 69, 0.07);
+	color: #b3002d;
+	border-color: rgba(252, 3, 69, 0.15);
+}
+
+.sl-markdown-content pre,
+.expressive-code .frame {
+	border: 1px solid var(--sillo-border) !important;
+	border-radius: 0.9rem !important;
+	background: var(--sillo-surface) !important;
+	box-shadow: none;
+}
+
+.card,
+.starlight-aside,
+.sl-link-card {
+	border-color: var(--sillo-border) !important;
+	background: rgba(17, 17, 18, 0.72) !important;
+}
+
+.card:hover,
+.sl-link-card:hover {
+	border-color: var(--sillo-border-strong) !important;
+	background: var(--sillo-surface-2) !important;
+}
+
+button,
+input,
+select,
+textarea {
+	font-family: inherit;
+}
+
+/*
+ * lucode-starlight's PageFrame renders its own <footer> from the `footerText`
+ * config string, and its stylesheet hides that footer on any page containing
+ * [data-slot='docs'] — which is every page with a table of contents. So it only
+ * ever showed on splash pages. src/components/SiteFooter replaces it site-wide
+ * (and keeps the theme credit), so the original is retired everywhere rather
+ * than left to appear on the handful of pages that still render it.
+ */
+[data-slot='layout'] > footer {
+	display: none !important;
+}
+
+/*
+ * The table of contents spills out of its own box on long pages.
+ *
+ * lucode-starlight's PageSidebar caps the sticky wrapper with
+ * `max-height: calc(100vh - header)` and leaves it `overflow: visible`, then
+ * asks the ToC inside for `height: 100%`. A percentage height against a parent
+ * with only a max-height resolves to `auto`, so the inner element grows to its
+ * full content height, its own `overflow-y: auto` never engages, and anything
+ * past the cap paints outside the wrapper. On /guides/routing/ that is ~290px
+ * of links hanging below the layout.
+ *
+ * It went unnoticed while the page ended right there and the overflow fell on
+ * empty background; with a footer beneath, it lands on top of it. Moving the
+ * scroll onto the capped wrapper is what the max-height was for.
+ */
+[data-slot='docs'] .toc > div {
+	overflow-y: auto;
+	overscroll-behavior: contain;
+	scrollbar-width: thin;
+	scrollbar-color: var(--sillo-border-strong) transparent;
+}

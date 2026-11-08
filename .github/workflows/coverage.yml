@@ -1,0 +1,75 @@
+name: Coverage
+
+on:
+  push:
+    branches:
+      - main
+      # The released 0.x line, which still takes dependency bumps and
+      # fixes. `main` above is the 1.0 branch.
+      - v0.x
+  pull_request:
+
+jobs:
+  coverage:
+    runs-on: ubuntu-latest
+
+    # Without a Redis server, the cache backend and event transport
+    # can skip themselves quietly, making coverage look healthy while
+    # those paths were never actually measured.
+    services:
+      redis:
+        image: redis:7-alpine
+        ports:
+          - 6379:6379
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+
+    env:
+      REDIS_URL: redis://localhost:6379/0
+      SILLO_TEST_REDIS_URL: redis://localhost:6379/15
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+
+      # The install script has moved between ~/.cargo/bin and
+      # ~/.local/bin across uv versions. Add both locations so PATH
+      # does not depend on the installer layout.
+      - name: Install uv
+        run: |
+          curl -LsSf https://astral.sh/uv/install.sh | sh
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+          echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
+
+      - name: Setup Virtual Environment
+        run: uv venv
+
+      - name: Install dependencies
+        run: uv pip install -e ".[dev]"
+
+      # pytest runs under coverage so the report is scoped to the
+      # sillo package according to [tool.coverage] in pyproject.toml.
+      # fail_under is enforced here before anything reaches Codecov.
+      - name: Run tests under coverage
+        run: uv run coverage run -m pytest tests
+
+      - name: Enforce coverage floor
+        run: uv run coverage report --fail-under=97
+
+      - name: Emit coverage.xml
+        run: uv run coverage xml -o coverage.xml
+
+      - name: Upload coverage to Codecov
+        uses: codecov/codecov-action@v5
+        with:
+          token: ${{ secrets.CODECOV_TOKEN }}
+          files: ./coverage.xml
+          fail_ci_if_error: true

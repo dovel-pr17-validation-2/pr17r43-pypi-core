@@ -1,0 +1,246 @@
+"""
+sillo.storage.storage — the object on ``app.state``, and how it gets there.
+
+``setup_storage(app, config)`` follows ``setup_record``: build the thing, put it
+on ``app.state``, register the lifecycle hooks, return it.  A project holds the
+:class:`Storage` and asks it for buckets — or, anywhere at all, calls
+``sillo.storage.bucket(...)`` and lets :mod:`.context` find it.
+"""
+
+from __future__ import annotations
+
+import logging
+from typing import Any
+
+from .bucket import Bucket
+from .config import BucketConfig, StorageConfig
+from .context import current_storage, register
+from .drivers import LocalDriver, MemoryDriver
+from .policies import Private
+from .signing import Signer
+
+__all__ = ["Storage", "StorageInstallable", "bucket", "setup_storage"]
+
+logger = logging.getLogger("sillo.storage")
+
+
+class Storage:
+    """Every bucket a project declared.
+
+    Attributes:
+        config: What was declared.
+        buckets: The built buckets, by name.
+    """
+
+    __slots__ = ("buckets", "config")
+
+    def __init__(self, config: StorageConfig, *, secret: str = "") -> None:
+        """Build the buckets a configuration describes.
+
+        Args:
+            config: What was declared.
+            secret: What signs URLs, when the configuration did not say.
+
+        Raises:
+            ValueError: If a bucket names a driver that does not exist.
+        """
+        self.config = config
+        self.buckets: dict[str, Bucket] = {}
+
+        signing_secret = config.secret or secret
+
+        for name, settings in config.buckets.items():
+            self.buckets[name] = Bucket(
+                name,
+                _build(name, settings, signing_secret, config.route),
+                policy=settings.policy or Private(),
+                max_bytes=settings.max_bytes,
+                accepts=settings.accepts,
+            )
+
+    def bucket(self, name: str = "") -> Bucket:
+        """One bucket.
+
+        Args:
+            name: Its name, or empty for the default.
+
+        Returns:
+            The bucket.
+
+        Raises:
+            KeyError: If no such bucket was declared.
+        """
+        wanted = name or self.config.default
+        self.config.bucket(wanted)
+        return self.buckets[wanted]
+
+    def listen(self, listener: Any) -> Any:
+        """Be told about every operation, in every bucket.
+
+        Args:
+            listener: Called with each
+                :class:`~sillo.storage.base.StorageEvent`.
+
+        Returns:
+            The listener, so this can be used as a decorator.
+        """
+        for bucket in self.buckets.values():
+            bucket.driver.listen(listener)
+        return listener
+
+    async def close(self) -> None:
+        """Release every driver."""
+        for bucket in self.buckets.values():
+            await bucket.driver.close()
+
+    def __repr__(self) -> str:
+        """A short description for debugging.
+
+        Returns:
+            The bucket names.
+        """
+        return f"Storage({', '.join(sorted(self.buckets)) or 'no buckets'})"
+
+
+def _build(name: str, settings: BucketConfig, secret: str, route: str) -> Any:
+    """Construct the driver a bucket asked for.
+
+    Args:
+        name: The bucket's name.
+        settings: Its configuration.
+        secret: What signs URLs.
+        route: Where the serving route is mounted.
+
+    Returns:
+        The driver.
+
+    Raises:
+        ValueError: If the driver is unknown, or cannot be built as asked.
+    """
+    signer = Signer(secret, name) if secret else None
+
+    if settings.driver == "memory":
+        return MemoryDriver()
+
+    if settings.driver == "local":
+        if not settings.root:
+            raise ValueError(f"bucket {name!r} uses the local driver and has no root")
+
+        return LocalDriver(
+            settings.root, signer=signer, base_url=f"{route.rstrip('/')}/{name}"
+        )
+
+    if settings.driver == "s3":
+        try:
+            from .drivers.s3 import S3Driver
+        except ImportError:
+            raise ValueError(
+                f"bucket {name!r} asks for the s3 driver, which needs "
+                "sillo-framework[storage-s3]"
+            )
+
+        if not settings.bucket:
+            raise ValueError(f"bucket {name!r} uses the s3 driver and has no bucket")
+
+        return S3Driver(
+            bucket=settings.bucket,
+            endpoint=settings.endpoint,
+            region=settings.region,
+            access_key=settings.access_key,
+            secret_key=settings.secret_key,
+            prefix=settings.prefix,
+            path_style=settings.path_style,
+            public_endpoint=settings.public_endpoint,
+        )
+
+    raise ValueError(
+        f"bucket {name!r} asks for an unknown driver {settings.driver!r}. "
+        "Known: memory, local, s3."
+    )
+
+
+class StorageInstallable:
+    """Install :class:`Storage` without changing Storage's service API."""
+
+    name = "storage"
+
+    def __init__(self, config: StorageConfig, *, secret: str = "") -> None:
+        self.config = config
+        self.secret = secret
+
+    def install(self, app: Any) -> Storage:
+        storage = Storage(self.config, secret=self.secret or _app_secret(app))
+        app.state[self.name] = storage
+        app.on_shutdown(storage.close)
+        register(storage)
+
+        if self.config.serve:
+            from .routes import mount
+
+            mount(app, storage, self.config)
+
+        logger.debug("storage ready — %s", storage)
+        return storage
+
+
+def setup_storage(app: Any, config: StorageConfig, *, secret: str = "") -> Storage:
+    """Install :class:`StorageInstallable`; kept as the functional API.
+
+    Puts the :class:`Storage` on ``app.state["storage"]``, mounts the serving
+    route when one is wanted, and registers a shutdown hook.
+
+    Args:
+        app: The application.
+        config: What to build.
+        secret: What signs URLs, when the configuration did not say. Falls back
+            to the application's own secret.
+
+    Returns:
+        The storage.
+    """
+    return app.install(StorageInstallable(config, secret=secret))
+
+
+def bucket(name: str = "") -> Bucket:
+    """The named bucket of the storage :func:`setup_storage` registered.
+
+    Shorthand for ``current_storage().bucket(name)``, for code that has no
+    reason to hold the whole :class:`Storage` — a route handler, a queue job,
+    a script, anywhere after startup::
+
+        from sillo.storage import bucket
+
+        @app.post("/avatar")
+        async def upload_avatar(ctx):
+            stored = await bucket("avatars").put(key, upload, user=ctx.user)
+            ...
+
+    Args:
+        name: The bucket's name, or empty for the configuration's default.
+
+    Returns:
+        The bucket.
+
+    Raises:
+        NotConfiguredError: If ``setup_storage`` has not run yet.
+        KeyError: If no such bucket was declared.
+    """
+    return current_storage().bucket(name)
+
+
+def _app_secret(app: Any) -> str:
+    """The application's own secret, if it has one.
+
+    Args:
+        app: The application.
+
+    Returns:
+        The secret, or an empty string — in which case the buckets are built
+        without a signer and say so when asked to sign.
+    """
+    for name in ("secret_key", "secret"):
+        found = getattr(app, name, None) or (app.state or {}).get(name)
+        if found:
+            return str(found)
+
+    return ""

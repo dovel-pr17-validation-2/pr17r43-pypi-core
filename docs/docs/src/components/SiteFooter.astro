@@ -1,0 +1,398 @@
+---
+/**
+ * Site-wide docs footer — the same footer sillo.build has.
+ *
+ * Structure, groups and link count are copied from that site's
+ * `FooterSection`, so someone moving between the two sees one footer rather
+ * than two designs: the sign-up block beside four link groups, then the
+ * bottom bar.
+ *
+ * lucode-starlight's own PageFrame footer renders `footerText`, a single
+ * inline-markdown string, and is hidden outright on any page carrying
+ * `[data-slot='docs']` — which is every page with a table of contents. So it
+ * never appeared on the docs at all. This replaces it.
+ */
+
+const DOCS = import.meta.env.BASE_URL.replace(/\/$/, '');
+const GITHUB = 'https://github.com/sillohq/core';
+
+type Group = { title: string; links: { label: string; href: string }[] };
+
+/*
+ * The four groups from sillo.build, with the same labels and the same
+ * sixteen links.
+ *
+ * Two of them point at pages that exist on neither site — `/community/` and
+ * `/community/contribution-guide/` are 404s there as well — so those keep
+ * their labels and point at the real thing on GitHub rather than being
+ * copied across as dead links.
+ */
+const groups: Group[] = [
+    {
+        title: 'Resources',
+        links: [
+            { label: 'Documentation', href: `${DOCS}/guides/introduction/` },
+            { label: 'Guides', href: `${DOCS}/guides/routing/` },
+            { label: 'Examples', href: `${GITHUB}/tree/main/examples` },
+        ],
+    },
+    {
+        title: 'Tools',
+        links: [
+            { label: 'Admin panel', href: `${DOCS}/guides/start/admin/` },
+            { label: 'Console', href: `${DOCS}/guides/start/console/` },
+            { label: 'Test clients', href: `${DOCS}/guides/start/testing/` },
+            { label: 'OpenAPI', href: `${DOCS}/guides/openapi/` },
+        ],
+    },
+    {
+        /*
+         * The ecosystem packages. This is deliberately the only entry point to
+         * /packages/ in the whole site: they version independently of the core
+         * manuals, so putting them in the section bar or a manual's sidebar
+         * would imply they move with whichever version you are reading.
+         */
+        title: 'Packages',
+        links: [
+            { label: 'All packages', href: `${DOCS}/packages/` },
+            { label: 'Wire', href: `${DOCS}/packages/wire/` },
+            { label: 'GraphQL', href: `${DOCS}/packages/graphql/` },
+            { label: 'Warder', href: `${DOCS}/packages/warder/` },
+        ],
+    },
+    {
+        title: 'Project',
+        links: [
+            { label: 'GitHub', href: GITHUB },
+            { label: 'Issues', href: `${GITHUB}/issues` },
+            { label: 'Discussions', href: `${GITHUB}/discussions` },
+            { label: 'Releases', href: `${GITHUB}/releases` },
+        ],
+    },
+    {
+        title: 'About',
+        links: [
+            { label: 'Installation', href: `${DOCS}/guides/installation/` },
+            { label: 'Contributing', href: `${GITHUB}/blob/main/.github/CONTRIBUTING.md` },
+            { label: 'Sillo', href: 'https://sillo.build/about' },
+            { label: 'License', href: `${GITHUB}/blob/main/LICENSE` },
+        ],
+    },
+];
+
+const year = new Date().getFullYear();
+---
+
+<footer class="site-footer" data-slot="site-footer">
+    <div class="measure middle">
+        <div class="signup">
+            <h2>Want to stay in touch?</h2>
+            <p>Release notes and framework updates, sent when a version ships.</p>
+            {/*
+              A link to the releases feed rather than an input posting nowhere.
+              sillo.build's markup has no action and no submit handler, so its
+              form silently discards whatever is typed into it — copying that
+              here would ship a control that lies about what it does. Watching
+              releases is what actually notifies you today.
+            */}
+            <a
+                class="signup-action"
+                href={`${GITHUB}/releases`}
+                target="_blank"
+                rel="noopener noreferrer"
+            >
+                <span>Watch releases on GitHub</span>
+                <span class="signup-cta">Subscribe</span>
+            </a>
+        </div>
+
+        <nav class="columns" aria-label="Footer">
+            {
+                groups.map((group) => (
+                    <div class="column">
+                        <h3>{group.title}</h3>
+                        <ul>
+                            {group.links.map((link) => {
+                                const external = link.href.startsWith('http');
+                                return (
+                                    <li>
+                                        <a
+                                            href={link.href}
+                                            {...(external
+                                                ? { target: '_blank', rel: 'noopener noreferrer' }
+                                                : {})}
+                                        >
+                                            {link.label}
+                                        </a>
+                                    </li>
+                                );
+                            })}
+                        </ul>
+                    </div>
+                ))
+            }
+        </nav>
+    </div>
+
+    <div class="measure bottom">
+        <div>Released under the BSD 3-Clause License / Copyright &copy; {year} Sillo</div>
+        <div class="bottom-links">
+            <a href={`${DOCS}/guides/introduction/`}>Docs</a>
+            <a href={`${GITHUB}/releases`} target="_blank" rel="noopener noreferrer">Releases</a>
+            <a href={GITHUB} target="_blank" rel="noopener noreferrer">GitHub</a>
+        </div>
+    </div>
+
+    {/*
+      Decoration, so it is hidden from assistive technology and unselectable —
+      the name is in the bottom bar already, and a screen reader announcing it
+      again at the end of every page is noise.
+    */}
+    <div class="measure wordmark-band" aria-hidden="true">
+        <span>sillo</span>
+    </div>
+</footer>
+
+<style>
+    .site-footer {
+        width: 100%;
+        /* No ground of its own, so it matches the page in both themes. */
+        background: transparent;
+        border-top: 1px solid var(--border);
+    }
+
+    /* The measure every block is held to, matching sillo.build's footer. */
+    .measure {
+        max-width: 1520px;
+        margin-inline: auto;
+        padding-inline: calc(var(--spacing) * 8);
+    }
+
+    @media (min-width: 768px) {
+        .measure {
+            padding-inline: calc(var(--spacing) * 12);
+        }
+    }
+
+    /* ---- sign-up + link groups ---- */
+
+    .middle {
+        display: grid;
+        grid-template-columns: 1fr;
+        border-bottom: 1px solid var(--border);
+    }
+
+    @media (min-width: 768px) {
+        .middle {
+            grid-template-columns: 36% 64%;
+        }
+    }
+
+    .signup {
+        padding-block: calc(var(--spacing) * 16);
+        border-bottom: 1px solid var(--border);
+    }
+
+    @media (min-width: 768px) {
+        .signup {
+            border-bottom: 0;
+            border-right: 1px solid var(--border);
+            padding-right: calc(var(--spacing) * 16);
+        }
+    }
+
+    .signup h2 {
+        margin: 0 0 calc(var(--spacing) * 6);
+        font-size: 1.5rem;
+        font-weight: 600;
+        letter-spacing: -0.04em;
+        color: var(--foreground);
+    }
+
+    .signup p {
+        margin: 0 0 calc(var(--spacing) * 9);
+        max-width: 380px;
+        font-family: var(--sl-font-mono);
+        font-size: 0.875rem;
+        line-height: 1.6;
+        color: var(--muted-foreground);
+    }
+
+    .signup-action {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: calc(var(--spacing) * 3);
+        max-width: 420px;
+        padding: calc(var(--spacing) * 1);
+        border: 1px solid var(--sillo-border-strong);
+        border-radius: 999px;
+        text-decoration: none;
+    }
+
+    .signup-action > span:first-child {
+        min-width: 0;
+        padding-inline: calc(var(--spacing) * 5);
+        font-family: var(--sl-font-mono);
+        font-size: 0.75rem;
+        color: var(--muted-foreground);
+    }
+
+    .signup-cta {
+        flex-shrink: 0;
+        border-radius: 999px;
+        background: var(--foreground);
+        color: var(--background);
+        font-size: 0.875rem;
+        font-weight: 600;
+        padding: calc(var(--spacing) * 3) calc(var(--spacing) * 6);
+        transition: transform 0.15s ease;
+    }
+
+    .signup-action:hover .signup-cta {
+        transform: scale(1.02);
+    }
+
+    .columns {
+        display: grid;
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+        gap: calc(var(--spacing) * 10);
+        padding-block: calc(var(--spacing) * 16);
+    }
+
+    @media (min-width: 768px) {
+        .columns {
+            grid-template-columns: repeat(4, minmax(0, 1fr));
+            padding-left: calc(var(--spacing) * 16);
+        }
+    }
+
+    .column h3 {
+        margin: 0 0 calc(var(--spacing) * 8);
+        font-family: var(--sl-font-mono);
+        font-size: 0.625rem;
+        font-weight: 400;
+        text-transform: uppercase;
+        letter-spacing: 0.14em;
+        color: var(--sillo-dimmed);
+    }
+
+    .column ul {
+        list-style: none;
+        margin: 0;
+        padding: 0;
+        display: flex;
+        flex-direction: column;
+        gap: calc(var(--spacing) * 5);
+    }
+
+    .column a {
+        font-size: 0.875rem;
+        font-weight: 600;
+        color: color-mix(in oklab, var(--foreground) 90%, transparent);
+        text-decoration: none;
+        transition: color 0.15s ease;
+    }
+
+    .column a:hover,
+    .column a:focus-visible {
+        color: var(--sillo-primary);
+    }
+
+    /* ---- bottom bar ---- */
+
+    .bottom {
+        display: flex;
+        flex-direction: column;
+        gap: calc(var(--spacing) * 4);
+        padding-block: calc(var(--spacing) * 8);
+        font-family: var(--sl-font-mono);
+        font-size: 0.625rem;
+        text-transform: uppercase;
+        letter-spacing: 0.08em;
+        color: var(--sillo-dimmed);
+    }
+
+    @media (min-width: 768px) {
+        .bottom {
+            flex-direction: row;
+            align-items: center;
+            justify-content: space-between;
+        }
+    }
+
+    .bottom-links {
+        display: flex;
+        gap: calc(var(--spacing) * 5);
+    }
+
+    .bottom-links a {
+        color: inherit;
+        text-decoration: none;
+        transition: color 0.15s ease;
+    }
+
+    .bottom-links a:hover {
+        color: var(--foreground);
+    }
+
+    /* ---- the wordmark ---- */
+
+    .wordmark-band {
+        /*
+         * Container query units, not vw. The word is sized against this
+         * block's own width — the 1520px measure, or the viewport minus its
+         * padding on anything narrower — so it keeps the same proportion to
+         * the footer at every width rather than tracking the screen.
+         */
+        container-type: inline-size;
+        overflow: hidden;
+        user-select: none;
+        padding-top: calc(var(--spacing) * 10);
+        /*
+         * Fades downward instead of ending on a hard baseline. Held opaque
+         * past the middle of the letterforms so the name stays legible, and
+         * clear of the bottom edge so the cut never shows as a line.
+         */
+        -webkit-mask-image: linear-gradient(to bottom, #000 52%, transparent 96%);
+        mask-image: linear-gradient(to bottom, #000 52%, transparent 96%);
+    }
+
+    .wordmark-band span {
+        display: block;
+        /* Sized against the measure, at about half of it. */
+        font-size: 30cqw;
+        /*
+         * 700 is the top of Instrument Sans Variable's weight axis (400-700).
+         * Asking for more gets a synthesised bold, which smears at this size.
+         */
+        font-weight: 700;
+        line-height: 0.78;
+        letter-spacing: -0.055em;
+        /* Half the letter-spacing, taken back off: centring counts the whole
+           text box, including the gap trailing the final glyph. */
+        text-indent: -0.0275em;
+        text-align: center;
+        white-space: nowrap;
+        color: var(--foreground);
+        opacity: 0.11;
+    }
+
+    :root[data-theme='light'] .wordmark-band span {
+        /* Dark ink on a light ground reads heavier at the same alpha. */
+        opacity: 0.08;
+    }
+
+    .site-footer a:focus-visible,
+    .site-footer button:focus-visible {
+        outline: 2px solid var(--sillo-primary);
+        outline-offset: 3px;
+        border-radius: 2px;
+    }
+
+    @media (prefers-reduced-motion: reduce) {
+        .site-footer * {
+            transition: none !important;
+        }
+    }
+</style>

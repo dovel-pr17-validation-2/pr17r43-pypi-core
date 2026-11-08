@@ -1,0 +1,322 @@
+from functools import partial
+
+import pytest
+
+from sillo.application import SilloApp
+from sillo import json
+from sillo.auth.session_auth.backend import login, logout
+from sillo.auth.session_auth.guard import SessionGuard
+from sillo.core.http import HttpContext
+from sillo.session.middleware import SessionMiddleware
+from sillo.testclient import AsyncTestClient
+from sillo.users import SimpleUser
+
+
+@pytest.fixture
+def test_client():
+    return partial(AsyncTestClient)
+
+
+class MockUser(SimpleUser):
+    __test__ = False
+
+    def __init__(self, username, permissions=None, user_id="1"):
+        super().__init__(username, permissions)
+        self._id = user_id
+
+    @property
+    def identity(self):
+        return self._id
+
+    def check_password(self, password):
+        return password == "secret"
+
+    async def set_last_login(self):
+        pass
+
+
+def make_mock_model(return_user):
+    from unittest.mock import AsyncMock
+
+    class Models:
+        pass
+
+    Models.objects = AsyncMock()
+    Models.objects.get_by_email = AsyncMock(return_value=return_user)
+    Models.objects.get_by_id = AsyncMock(return_value=return_user)
+    return Models
+
+
+async def test_login_sets_session(test_client):
+    app = SilloApp()
+    app.use(SessionMiddleware(secret_key="test-key"))
+
+    @app.post("/login")
+    async def do_login(ctx: HttpContext):
+        login(ctx, SimpleUser("alice"))
+        return json({"ok": True})
+
+    @app.get("/check")
+    async def check(ctx: HttpContext):
+        d = ctx.session.get("user")
+        return json({"has_user": d is not None, "id": str(d["id"]) if d else None})
+
+    client = test_client(app)
+    login_res = await client.post("/login")
+    session = login_res.cookies.get("session_id")
+    res = await client.get("/check", cookies={"session_id": session})
+    assert res.json() == {"has_user": True, "id": "alice"}
+    await client.aclose()
+
+
+async def test_logout_clears_session(test_client):
+    app = SilloApp()
+    app.use(SessionMiddleware(secret_key="test-key"))
+
+    @app.post("/login")
+    async def do_login(ctx: HttpContext):
+        login(ctx, SimpleUser("alice"))
+        return json({"ok": True})
+
+    @app.post("/logout")
+    async def do_logout(ctx: HttpContext):
+        logout(ctx)
+        return json({"ok": True})
+
+    @app.get("/check")
+    async def check(ctx: HttpContext):
+        return json({"authenticated": bool(ctx.session.get("user"))})
+
+    client = test_client(app)
+
+    login_res = await client.post("/login")
+    login_cookie = login_res.cookies.get("session_id")
+
+    res = await client.get("/check", cookies={"session_id": login_cookie})
+    assert res.json()["authenticated"] is True
+
+    logout_res = await client.post("/logout", cookies={"session_id": login_cookie})
+    cleared_cookie = logout_res.cookies.get("session_id")
+
+    res = await client.get("/check", cookies={"session_id": cleared_cookie})
+    assert res.json()["authenticated"] is False
+    await client.aclose()
+
+
+async def test_guard_attempt_and_check(test_client):
+    mock_model = make_mock_model(MockUser("alice", user_id="1"))
+    app = SilloApp()
+    app.use(SessionMiddleware(secret_key="test-key"))
+    guard = SessionGuard(backend=None, user_model=mock_model)
+
+    @app.post("/login")
+    async def do_login(ctx: HttpContext):
+        form = await ctx.form
+        ok = await guard.attempt(ctx, email=form["email"], password=form["password"])
+        return json({"status": "ok" if ok else "fail"})
+
+    @app.get("/check")
+    async def check(ctx: HttpContext):
+        return json({"authenticated": await guard.check(ctx)})
+
+    @app.get("/id")
+    async def get_id(ctx: HttpContext):
+        uid = await guard.id(ctx)
+        return json({"id": uid})
+
+    client = test_client(app)
+    login_res = await client.post("/login", data={"email": "a@b.com", "password": "secret"})
+    assert login_res.status_code == 200
+    session = login_res.cookies.get("session_id")
+
+    res = await client.get("/check", cookies={"session_id": session})
+    assert res.json()["authenticated"] is True
+
+    res = await client.get("/id", cookies={"session_id": session})
+    assert res.json()["id"] == "1"
+    await client.aclose()
+
+
+async def test_guard_attempt_wrong_password(test_client):
+    mock_model = make_mock_model(MockUser("alice", user_id="1"))
+    app = SilloApp()
+    app.use(SessionMiddleware(secret_key="test-key"))
+    guard = SessionGuard(backend=None, user_model=mock_model)
+
+    @app.post("/login")
+    async def do_login(ctx: HttpContext):
+        form = await ctx.form
+        ok = await guard.attempt(ctx, email=form["email"], password=form["password"])
+        return json({"status": "ok" if ok else "fail"})
+
+    client = test_client(app)
+    res = await client.post("/login", data={"email": "a@b.com", "password": "wrong"})
+    assert res.json() == {"status": "fail"}
+    await client.aclose()
+
+
+async def test_guard_attempt_user_not_found(test_client):
+    mock_model = make_mock_model(None)
+    app = SilloApp()
+    app.use(SessionMiddleware(secret_key="test-key"))
+    guard = SessionGuard(backend=None, user_model=mock_model)
+
+    @app.post("/login")
+    async def do_login(ctx: HttpContext):
+        form = await ctx.form
+        ok = await guard.attempt(ctx, email=form["email"], password=form["password"])
+        return json({"status": "ok" if ok else "fail"})
+
+    client = test_client(app)
+    res = await client.post("/login", data={"email": "ghost@b.com", "password": "any"})
+    assert res.json() == {"status": "fail"}
+    await client.aclose()
+
+
+async def test_guard_logout(test_client):
+    mock_model = make_mock_model(MockUser("alice", user_id="1"))
+    app = SilloApp()
+    app.use(SessionMiddleware(secret_key="test-key"))
+    guard = SessionGuard(backend=None, user_model=mock_model)
+
+    @app.post("/login")
+    async def do_login(ctx: HttpContext):
+        form = await ctx.form
+        await guard.attempt(ctx, email=form["email"], password=form["password"])
+        return json({"ok": True})
+
+    @app.post("/logout")
+    async def do_logout(ctx: HttpContext):
+        await guard.logout(ctx)
+        return json({"ok": True})
+
+    @app.get("/check")
+    async def check(ctx: HttpContext):
+        return json({"authenticated": await guard.check(ctx)})
+
+    client = test_client(app)
+
+    login_res = await client.post("/login", data={"email": "a@b.com", "password": "secret"})
+    login_cookie = login_res.cookies.get("session_id")
+
+    res = await client.get("/check", cookies={"session_id": login_cookie})
+    assert res.json()["authenticated"] is True
+
+    logout_res = await client.post("/logout", cookies={"session_id": login_cookie})
+    cleared_cookie = logout_res.cookies.get("session_id")
+
+    res = await client.get("/check", cookies={"session_id": cleared_cookie})
+    assert res.json()["authenticated"] is False
+    await client.aclose()
+
+
+async def test_guard_attempt_without_a_user_model_fails_fast(test_client):
+    guard = SessionGuard(backend=None, user_model=None)
+    app = SilloApp()
+    app.use(SessionMiddleware(secret_key="test-key"))
+
+    @app.post("/login")
+    async def do_login(ctx: HttpContext):
+        ok = await guard.attempt(ctx, email="a@b.com", password="secret")
+        return json({"status": "ok" if ok else "fail"})
+
+    client = test_client(app)
+    res = await client.post("/login")
+    assert res.json()["status"] == "fail"
+    await client.aclose()
+
+
+async def test_guard_validate_without_a_user_model_fails_fast(test_client):
+    guard = SessionGuard(backend=None, user_model=None)
+    app = SilloApp()
+
+    @app.post("/validate")
+    async def validate(ctx: HttpContext):
+        body = await ctx.json
+        ok = await guard.validate(ctx, body)
+        return json({"valid": ok})
+
+    client = test_client(app)
+    res = await client.post("/validate", json={"email": "a@b.com", "password": "secret"})
+    assert res.json()["valid"] is False
+    await client.aclose()
+
+
+class _NoSessionAttribute:
+    """A context stand-in with no ``session`` attribute at all -- unlike a
+    real ``HttpContext`` used without ``SessionMiddleware``, whose
+    ``session`` property raises ``AssertionError`` rather than being
+    simply absent, so ``hasattr`` there never even reaches this branch."""
+
+
+async def test_guard_check_without_a_session_attribute_is_false():
+    guard = SessionGuard(backend=None, user_model=None)
+    assert await guard.check(_NoSessionAttribute()) is False
+
+
+async def test_guard_id_without_a_session_attribute_is_none():
+    guard = SessionGuard(backend=None, user_model=None)
+    assert await guard.id(_NoSessionAttribute()) is None
+
+
+async def test_guard_user_returns_the_full_record_from_the_session(test_client):
+    mock_model = make_mock_model(MockUser("alice", user_id="1"))
+    app = SilloApp()
+    app.use(SessionMiddleware(secret_key="test-key"))
+    guard = SessionGuard(backend=None, user_model=mock_model)
+
+    @app.post("/login")
+    async def do_login(ctx: HttpContext):
+        await guard.login(ctx, MockUser("alice", user_id="1"))
+        return json({"ok": True})
+
+    @app.get("/whoami")
+    async def whoami(ctx: HttpContext):
+        user = await guard.user(ctx)
+        return json({"username": user.username if user else None})
+
+    client = test_client(app)
+    login_res = await client.post("/login")
+    session = login_res.cookies.get("session_id")
+
+    res = await client.get("/whoami", cookies={"session_id": session})
+    assert res.json()["username"] == "alice"
+    await client.aclose()
+
+
+async def test_guard_user_is_none_without_a_session(test_client):
+    mock_model = make_mock_model(MockUser("alice", user_id="1"))
+    guard = SessionGuard(backend=None, user_model=mock_model)
+    app = SilloApp()
+    app.use(SessionMiddleware(secret_key="test-key"))
+
+    @app.get("/whoami")
+    async def whoami(ctx: HttpContext):
+        user = await guard.user(ctx)
+        return json({"username": user.username if user else None})
+
+    client = test_client(app)
+    res = await client.get("/whoami")
+    assert res.json()["username"] is None
+    await client.aclose()
+
+
+async def test_guard_validate(test_client):
+    mock_model = make_mock_model(MockUser("alice", user_id="1"))
+    app = SilloApp()
+    app.use(SessionMiddleware(secret_key="test-key"))
+    guard = SessionGuard(backend=None, user_model=mock_model)
+
+    @app.post("/validate")
+    async def validate(ctx: HttpContext):
+        body = await ctx.json
+        ok = await guard.validate(ctx, body)
+        return json({"valid": ok})
+
+    client = test_client(app)
+    res = await client.post("/validate", json={"email": "a@b.com", "password": "secret"})
+    assert res.json()["valid"] is True
+
+    res = await client.post("/validate", json={"email": "a@b.com", "password": "wrong"})
+    assert res.json()["valid"] is False
+    await client.aclose()

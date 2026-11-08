@@ -1,0 +1,27 @@
+{
+    "$schema": "https://openapi.vercel.sh/vercel.json",
+
+    "installCommand": "bun install --frozen-lockfile",
+    "buildCommand": "bun run docs:build",
+    "outputDirectory": "docs/dist",
+
+    "trailingSlash": true,
+
+    "redirects": [
+        {
+            "source": "/",
+            "destination": "/v1.0/guides/introduction/",
+            "permanent": false
+        },
+        {
+            "source": "/guides/getting-started/",
+            "destination": "/v1.0/guides/introduction/",
+            "permanent": false
+        },
+        {
+            "source": "/:manual(guides|start|cli|orm|pydantic|advanced)/:path*",
+            "destination": "/v1.0/:manual/:path*",
+            "permanent": false
+        }
+    ]
+}

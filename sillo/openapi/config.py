@@ -1,0 +1,163 @@
+from pydantic import BaseModel
+
+from .models import (
+    Components,
+    Contact,
+    Example,
+    ExternalDocumentation,
+    Info,
+    License,
+    OpenAPI,
+    Parameter,
+    Reference,
+    Schema,
+    SecurityScheme,
+    Server,
+    Tag,
+)
+from .models import Response as OpenAPIResponse
+
+
+class OpenAPIConfig:
+    """Openapiconfig"""
+
+    def __init__(
+        self,
+        title: str = "API Documentation",
+        version: str = "1.0.0",
+        description: str = "",
+        servers: list[Server] | None = [],
+        contact: Contact | None = None,
+        license: License | None = None,
+        termsOfService: str | None = None,
+        openapi_version: str = "3.0.0",
+    ):
+        """Init"""
+        self.openapi_spec = OpenAPI(
+            openapi=openapi_version,
+            info=Info(
+                title=title,
+                version=version,
+                description=description,
+                contact=contact,
+                license=license,
+                termsOfService=termsOfService,
+            ),
+            paths={},
+            servers=servers,
+            components=Components(),
+        )
+
+    @property
+    def security_schemes(self) -> dict[str, SecurityScheme | Reference]:
+        """The security schemes registered on this document.
+
+        Reads the document itself. This used to be a separate dict assigned
+        in ``__init__`` that ``add_security_scheme`` never wrote to, so it
+        was permanently empty and anything trusting it concluded the
+        application had no schemes at all.
+
+        A value may be a ``Reference`` as well as a scheme: OpenAPI allows a
+        ``$ref`` anywhere under ``securitySchemes``, and this reads whatever
+        the document holds rather than what it wishes were there.
+        """
+        components = self.openapi_spec.components
+        if components is None or not components.securitySchemes:
+            return {}
+        return components.securitySchemes
+
+    def add_security_scheme(self, name: str, scheme: SecurityScheme):
+        """Add a security scheme to the OpenAPI specification"""
+        if not self.openapi_spec.components:
+            self.openapi_spec.components = Components()
+
+        if not self.openapi_spec.components.securitySchemes:
+            self.openapi_spec.components.securitySchemes = {}
+
+        self.openapi_spec.components.securitySchemes[name] = scheme
+
+    def add_schema(self, name: str, schema: type[BaseModel] | Schema):
+        """Add a schema to the OpenAPI components section"""
+        if not self.openapi_spec.components:
+            self.openapi_spec.components = Components()
+
+        if not self.openapi_spec.components.schemas:
+            self.openapi_spec.components.schemas = {}
+
+        if isinstance(schema, type) and issubclass(schema, BaseModel):
+            self.openapi_spec.components.schemas[name] = Schema(
+                **schema.model_json_schema()
+            )
+        else:
+            self.openapi_spec.components.schemas[name] = schema
+
+    def add_parameter(self, name: str, parameter: Parameter):
+        """Add a reusable parameter to the OpenAPI components section"""
+        if not self.openapi_spec.components:
+            self.openapi_spec.components = Components()
+
+        if not self.openapi_spec.components.parameters:
+            self.openapi_spec.components.parameters = {}
+
+        self.openapi_spec.components.parameters[name] = parameter
+
+    def add_response(self, name: str, response: OpenAPIResponse):
+        """Add a reusable response to the OpenAPI components section"""
+        if not self.openapi_spec.components:
+            self.openapi_spec.components = Components()
+
+        if not self.openapi_spec.components.responses:
+            self.openapi_spec.components.responses = {}
+
+        self.openapi_spec.components.responses[name] = response
+
+    def add_example(self, name: str, example: Example):
+        """Add an example to the OpenAPI components section"""
+        if self.openapi_spec.components is None:
+            self.openapi_spec.components = Components()
+
+        if self.openapi_spec.components.examples is None:
+            self.openapi_spec.components.examples = {}
+
+        self.openapi_spec.components.examples[name] = example  # ty: igore[unresolved-attribute]  # ty:ignore[invalid-assignment]
+
+    def add_tag(self, tag: Tag):
+        """Add a tag to the OpenAPI specification"""
+        if not self.openapi_spec.tags:
+            self.openapi_spec.tags = []
+
+        # Check if tag already exists
+        existing_tags = [t.name for t in self.openapi_spec.tags]
+        if tag.name not in existing_tags:
+            self.openapi_spec.tags.append(tag)
+
+    def add_server(self, server: Server):
+        """Add a server to the OpenAPI specification"""
+        if not self.openapi_spec.servers:
+            self.openapi_spec.servers = []
+
+        self.openapi_spec.servers.append(server)
+
+    def set_external_docs(self, external_docs: ExternalDocumentation):
+        """Set external documentation for the OpenAPI specification"""
+        self.openapi_spec.externalDocs = external_docs
+
+    def set_global_security(self, security: list[dict[str, list[str]]]):
+        """Set global security requirements for all operations"""
+        self.openapi_spec.security = security
+
+    def get_schema_ref(self, name: str) -> str:
+        """Get a reference to a schema in the components section"""
+        return f"#/components/schemas/{name}"
+
+    def get_parameter_ref(self, name: str) -> str:
+        """Get a reference to a parameter in the components section"""
+        return f"#/components/parameters/{name}"
+
+    def get_response_ref(self, name: str) -> str:
+        """Get a reference to a response in the components section"""
+        return f"#/components/responses/{name}"
+
+    def get_example_ref(self, name: str) -> str:
+        """Get a reference to an example in the components section"""
+        return f"#/components/examples/{name}"

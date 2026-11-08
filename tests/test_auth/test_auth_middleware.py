@@ -1,0 +1,280 @@
+"""
+Authentication Middleware Tests
+
+This module tests the authentication middleware including:
+- Multiple backends processing
+- Error handling in backends
+- User loading failures
+- Backend fallback scenarios
+"""
+
+from functools import partial
+
+import anyio
+import pytest
+
+from sillo.application import SilloApp
+from sillo import json
+from sillo.auth import AuthenticationMiddleware, BaseUser, useAuth
+from sillo.auth.backend import AuthenticationBackend
+from sillo.auth.model import AuthResult
+from sillo.users import SimpleUser, UnauthenticatedUser
+from sillo.core.http import HttpContext
+from sillo.testclient import AsyncTestClient
+
+
+# -------------------------
+# Fixtures
+# -------------------------
+@pytest.fixture
+def test_client():
+    return partial(AsyncTestClient)
+
+
+# -------------------------
+# Mock Users
+# -------------------------
+class TestUser(BaseUser):
+    __test__ = False
+    def __init__(
+        self,
+        user_id: str,
+        username: str,
+        roles: list = None,
+        is_authenticated: bool = True,
+    ):
+        self.user_id = user_id
+        self.username = username
+        self.roles = roles or []
+        self._is_authenticated = is_authenticated
+
+    @property
+    def is_authenticated(self):
+        return self._is_authenticated
+
+    @property
+    def display_name(self):
+        return self.username
+
+    @property
+    def identity(self):
+        return self.user_id
+
+    def has_permission(self, permission: str):
+        return permission in self.roles
+
+    @classmethod
+    async def load_user(cls, identity: str):
+        users_db = {
+            "1": cls("1", "testuser", ["read", "write"]),
+            "2": cls("2", "admin", ["read", "write", "admin", "delete"]),
+            "3": cls("3", "guest", ["read"]),
+            "4": cls("4", "banned", [], False),
+        }
+        return users_db.get(str(identity))
+
+
+class CustomUser(BaseUser):
+
+    def __init__(self, user_id: str, username: str):
+        self.user_id = user_id
+        self.username = username
+
+    @classmethod
+    async def load_user(cls, identity: str):
+        if identity == "fail_user":
+            raise Exception("User loading failed")
+        return cls("1", "test")
+
+    @property
+    def is_authenticated(self):
+        return True
+
+    @property
+    def display_name(self):
+        return "test"
+
+    @property
+    def identity(self):
+        return "1"
+
+    def has_permission(self, permission: str):
+        return False
+
+
+# -------------------------
+# Tests
+# -------------------------
+
+
+async def test_auth_middleware_multiple_backends_success(test_client):
+    app = SilloApp()
+    client = test_client(app)
+
+    class FirstBackend(AuthenticationBackend):
+        async def authenticate(self, ctx: HttpContext):
+            if ctx.headers.get("X-First-Auth") == "first_valid":
+                return AuthResult(success=True, identity="first_user", scope="first")
+            return AuthResult(success=False, identity="", scope="")
+
+    class SecondBackend(AuthenticationBackend):
+        async def authenticate(self, ctx: HttpContext):
+            if ctx.headers.get("X-Second-Auth") == "second_valid":
+                return AuthResult(success=True, identity="second_user", scope="second")
+            return AuthResult(success=False, identity="", scope="")
+
+    app.use(
+        AuthenticationMiddleware(SimpleUser, [FirstBackend(), SecondBackend()])
+    )
+
+    @app.get("/protected", auth=useAuth(schemes=["first"]))
+    async def protected_route(ctx: HttpContext):
+        return json(
+            {"user_id": ctx.user.identity, "auth_method": ctx.scope.get("auth")}
+        )
+
+    async with client:
+        res = await client.get("/protected", headers={"X-First-Auth": "first_valid"})
+        assert res.status_code == 200
+        data = res.json()
+        assert data["user_id"] == "first_user"
+        assert data["auth_method"] == "first"
+
+
+async def test_auth_middleware_multiple_backends_fallback(test_client):
+    app = SilloApp()
+    client = test_client(app)
+
+    class FirstBackend(AuthenticationBackend):
+        async def authenticate(self, ctx: HttpContext):
+            return AuthResult(success=False, identity="", scope="")
+
+    class SecondBackend(AuthenticationBackend):
+        async def authenticate(self, ctx: HttpContext):
+            if ctx.headers.get("X-Second-Auth") == "second_valid":
+                return AuthResult(success=True, identity="second_user", scope="second")
+            return AuthResult(success=False, identity="", scope="")
+
+    app.use(
+        AuthenticationMiddleware(SimpleUser, [FirstBackend(), SecondBackend()])
+    )
+
+    @app.get("/protected", auth=useAuth(schemes=["second"]))
+    async def protected_route(ctx: HttpContext):
+        return json({"user_id": ctx.user.identity})
+
+    async with client:
+        res = await client.get("/protected", headers={"X-Second-Auth": "second_valid"})
+        assert res.status_code == 200
+        assert res.json()["user_id"] == "second_user"
+
+
+async def test_auth_middleware_no_backends_succeed(test_client):
+    app = SilloApp()
+    client = test_client(app)
+
+    class FailingBackend(AuthenticationBackend):
+        async def authenticate(self, ctx: HttpContext):
+            return AuthResult(success=False, identity="", scope="")
+
+    app.use(AuthenticationMiddleware(TestUser, FailingBackend()))
+
+    @app.get("/protected", auth=useAuth(schemes=["jwt"]))
+    async def protected_route(ctx: HttpContext):
+        return json({"user": ctx.user})
+
+    async with client:
+        res = await client.get("/protected")
+        assert res.status_code == 401
+
+
+async def test_auth_middleware_user_loading_failure(test_client):
+    app = SilloApp()
+    client = test_client(app)
+
+    from sillo.auth import JWTAuthBackend, create_jwt
+
+    jwt_backend = JWTAuthBackend(secret_key="a-test-jwt-secret-key-for-hs256")
+    app.use(AuthenticationMiddleware(CustomUser, jwt_backend))
+
+    @app.get("/protected", auth=useAuth(schemes=["jwt"]))
+    async def protected_route(ctx: HttpContext):
+        return json({"user": ctx.user})
+
+    payload = {"id": "fail_user"}
+    token = create_jwt(payload, "a-test-jwt-secret-key-for-hs256")
+
+    async with client:
+        res = await client.get(
+            "/protected", headers={"Authorization": f"Bearer {token}"}
+        )
+        assert res.status_code == 401
+
+
+async def test_auth_middleware_backend_exception_handling(test_client):
+    app = SilloApp()
+    client = test_client(app)
+
+    class FaultyAuthBackend(AuthenticationBackend):
+        async def authenticate(self, ctx: HttpContext):
+            raise Exception("Backend error")
+
+    class WorkingAuthBackend(AuthenticationBackend):
+        async def authenticate(self, ctx: HttpContext):
+            if ctx.headers.get("X-Backup-Auth") == "backup_valid":
+                return AuthResult(success=True, identity="backup_user", scope="backup")
+            return AuthResult(success=False, identity="", scope="")
+
+    app.use(
+        AuthenticationMiddleware(
+            SimpleUser, [FaultyAuthBackend(), WorkingAuthBackend()]
+        )
+    )
+
+    @app.get("/protected", auth=useAuth(schemes=["backup"]))
+    async def protected_route(ctx: HttpContext):
+        return json({"user_id": ctx.user.identity})
+
+    async with client:
+        res = await client.get("/protected", headers={"X-Backup-Auth": "backup_valid"})
+        assert res.status_code == 200
+        assert res.json()["user_id"] == "backup_user"
+
+
+def test_non_http_scope_passes_through_untouched():
+    """Websocket and lifespan connections have no request to authenticate."""
+    middleware = AuthenticationMiddleware()
+    called = {}
+
+    async def downstream(scope, receive, send):
+        called["scope"] = scope
+
+    middleware.app = downstream
+
+    async def receive():
+        return {"type": "lifespan.startup"}
+
+    async def send(message):
+        pass
+
+    anyio.run(middleware.__call__, {"type": "lifespan"}, receive, send)
+
+    assert called["scope"] == {"type": "lifespan"}
+
+
+def test_without_an_inner_app_raises():
+    middleware = AuthenticationMiddleware()
+
+    async def receive():
+        return {"type": "http.request"}
+
+    async def send(message):
+        pass
+
+    with pytest.raises(RuntimeError, match="without an inner application"):
+        anyio.run(
+            middleware.__call__,
+            {"type": "http", "path": "/x", "method": "GET", "headers": []},
+            receive,
+            send,
+        )

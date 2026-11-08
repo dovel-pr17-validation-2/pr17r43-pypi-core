@@ -1,0 +1,398 @@
+---
+/**
+ * Renders the <pre class="mermaid"> blocks that src/plugins/remark-mermaid.mjs
+ * leaves behind.
+ *
+ * Included from PageFrame so it is present on every page, but the mermaid
+ * bundle is a dynamic import behind a check for a diagram on the page: only the
+ * 50 pages under /advanced/ that actually carry one pay for it.
+ *
+ * The source text stays in the DOM until a diagram has rendered successfully,
+ * so a failed parse or a blocked bundle leaves the definition on screen rather
+ * than an empty gap.
+ */
+---
+
+<script>
+    type MermaidApi = {
+        initialize: (config: Record<string, unknown>) => void;
+        render: (id: string, source: string) => Promise<{ svg: string }>;
+    };
+
+    const SANS =
+        "'Instrument Sans Variable', ui-sans-serif, system-ui, sans-serif";
+
+    // Mermaid resolves these into the SVG at render time, so they cannot be CSS
+    // custom properties. They are the same values global.css defines, kept in
+    // step by hand: nodes stay on the surface greys and the crimson is spent
+    // only on cluster borders, which is the one place it reads as structure
+    // rather than as decoration.
+    const DARK = {
+        fontSize: '15px',
+        fontFamily: SANS,
+        background: '#0b0b0c',
+        primaryColor: '#171719',
+        primaryTextColor: '#f7f7f5',
+        primaryBorderColor: '#3f3f45',
+        secondaryColor: '#111112',
+        secondaryTextColor: '#f7f7f5',
+        secondaryBorderColor: '#3f3f45',
+        tertiaryColor: '#0b0b0c',
+        tertiaryTextColor: '#8b8b91',
+        tertiaryBorderColor: '#2a2a2e',
+        lineColor: '#8b8b91',
+        textColor: '#f7f7f5',
+        mainBkg: '#171719',
+        nodeBorder: '#3f3f45',
+        clusterBkg: '#100b0d',
+        clusterBorder: '#5a0a20',
+        titleColor: '#f7f7f5',
+        edgeLabelBackground: '#0b0b0c',
+        actorBkg: '#171719',
+        actorBorder: '#3f3f45',
+        actorTextColor: '#f7f7f5',
+        actorLineColor: '#55555b',
+        signalColor: '#f7f7f5',
+        signalTextColor: '#f7f7f5',
+        labelBoxBkgColor: '#171719',
+        labelBoxBorderColor: '#3f3f45',
+        labelTextColor: '#f7f7f5',
+        loopTextColor: '#f7f7f5',
+        noteBkgColor: '#1d1416',
+        noteTextColor: '#f7f7f5',
+        noteBorderColor: '#5a0a20',
+    };
+
+    const LIGHT = {
+        ...DARK,
+        background: '#ffffff',
+        primaryColor: '#ffffff',
+        primaryTextColor: '#1a1a1a',
+        primaryBorderColor: '#d4d4d4',
+        secondaryColor: '#f5f5f5',
+        secondaryTextColor: '#1a1a1a',
+        secondaryBorderColor: '#d4d4d4',
+        tertiaryColor: '#fafafa',
+        tertiaryTextColor: '#6b6b6b',
+        tertiaryBorderColor: '#e5e5e5',
+        lineColor: '#6b6b6b',
+        textColor: '#1a1a1a',
+        mainBkg: '#ffffff',
+        nodeBorder: '#d4d4d4',
+        clusterBkg: '#fff7f9',
+        clusterBorder: '#ffc9d4',
+        titleColor: '#1a1a1a',
+        edgeLabelBackground: '#ffffff',
+        actorBkg: '#ffffff',
+        actorBorder: '#d4d4d4',
+        actorTextColor: '#1a1a1a',
+        actorLineColor: '#a3a3a3',
+        signalColor: '#1a1a1a',
+        signalTextColor: '#1a1a1a',
+        labelBoxBkgColor: '#ffffff',
+        labelBoxBorderColor: '#d4d4d4',
+        labelTextColor: '#1a1a1a',
+        loopTextColor: '#1a1a1a',
+        noteBkgColor: '#fff7f9',
+        noteTextColor: '#1a1a1a',
+        noteBorderColor: '#ffc9d4',
+    };
+
+    /** A diagram that has not drawn by now is treated as one that never will. */
+    const RENDER_TIMEOUT_MS = 20000;
+
+    /**
+     * How far outside the viewport a diagram is queued, and how far outside it
+     * is still worth drawing when its turn arrives.
+     *
+     * The second number is the larger one on purpose. Queueing eagerly keeps
+     * the diagram just below the fold ready before it is reached; drawing only
+     * what is still nearby is what stops a fast scroll through /advanced/ from
+     * committing the main thread to seventeen diagrams the reader has already
+     * gone past.
+     */
+    const QUEUE_MARGIN_PX = 300;
+    const DRAW_MARGIN_PX = 2000;
+
+    let mermaid: MermaidApi | null = null;
+    let counter = 0;
+    let configuredDark: boolean | null = null;
+
+    /** Starlight always stamps the resolved theme, so there is no third state. */
+    function isDark(): boolean {
+        return document.documentElement.dataset.theme !== 'light';
+    }
+
+    async function load(): Promise<MermaidApi> {
+        if (!mermaid) {
+            // Bare specifier, so this has to be bundled rather than injected as
+            // a raw <script> in `head`: the browser cannot resolve 'mermaid'.
+            mermaid = ((await import('mermaid')) as unknown as { default: MermaidApi })
+                .default;
+        }
+        if (configuredDark === isDark()) return mermaid;
+        configuredDark = isDark();
+        mermaid.initialize({
+            startOnLoad: false,
+            // 'base' is the only theme that honours every variable below.
+            // 'dark' and 'default' hard-code their own palette on top.
+            theme: 'base',
+            securityLevel: 'strict',
+            fontFamily: SANS,
+            // Wide graphs are shrunk to fit by default, which on the larger
+            // /advanced/ diagrams made the labels unreadable. They render at
+            // their natural size and the container scrolls instead.
+            flowchart: { useMaxWidth: false, htmlLabels: true, curve: 'basis' },
+            sequence: { useMaxWidth: false },
+            gantt: { useMaxWidth: false },
+            themeVariables: isDark() ? DARK : LIGHT,
+        });
+        return mermaid;
+    }
+
+    /**
+     * Hand the main thread back long enough for the browser to paint and to
+     * answer input.
+     *
+     * This is the whole reason the page stays usable. `mermaid.render` is
+     * asynchronous in signature only: the layout it does underneath is
+     * synchronous, CPU-bound and uninterruptible, so a page carrying a dozen
+     * diagrams used to hand the browser one unbroken block of work per batch —
+     * measured at up to six seconds on /advanced/middleware/, during which
+     * nothing scrolled, nothing painted and no click registered.
+     *
+     * Yielding between diagrams does not make the total work smaller. It
+     * converts one long freeze into a series of short ones with usable gaps
+     * between them, which is the difference between a page that is slow and a
+     * page that is broken.
+     */
+    function yieldToBrowser(): Promise<void> {
+        const scheduler = (window as unknown as {
+            scheduler?: { yield?: () => Promise<void> };
+        }).scheduler;
+        if (scheduler?.yield) return scheduler.yield();
+        if (typeof requestIdleCallback === 'function') {
+            return new Promise((resolve) =>
+                requestIdleCallback(() => resolve(), { timeout: 300 }),
+            );
+        }
+        return new Promise((resolve) => setTimeout(resolve, 0));
+    }
+
+    /** Whether *element* is close enough to the viewport to be worth drawing. */
+    function nearViewport(element: HTMLElement, margin: number): boolean {
+        const box = element.getBoundingClientRect();
+        return box.bottom > -margin && box.top < window.innerHeight + margin;
+    }
+
+    /**
+     * One diagram is drawn at a time, in view order, with a yield between each.
+     *
+     * Serialising is deliberate. Firing the renders concurrently does not make
+     * them concurrent — there is one main thread — it only merges their
+     * synchronous phases into a single longer task with no gap for the browser
+     * to use.
+     */
+    const queue: HTMLElement[] = [];
+    let pumping = false;
+    let watcher: IntersectionObserver | null = null;
+
+    function schedule(block: HTMLElement): void {
+        if (!queue.includes(block)) queue.push(block);
+        void pump();
+    }
+
+    async function pump(): Promise<void> {
+        if (pumping) return;
+        pumping = true;
+        try {
+            while (queue.length) {
+                const block = queue.shift() as HTMLElement;
+
+                // Scrolled well past while it waited. Hand it back to the
+                // observer rather than spending the main thread on something
+                // nobody is looking at; it will be queued again if the reader
+                // comes back.
+                if (
+                    block.dataset.mermaidRendered !== 'true' &&
+                    !nearViewport(block, DRAW_MARGIN_PX)
+                ) {
+                    watcher?.observe(block);
+                    continue;
+                }
+
+                await enqueue(block);
+                await yieldToBrowser();
+            }
+        } finally {
+            pumping = false;
+        }
+    }
+
+    /**
+     * The timeout guards a render whose promise never settles — some diagrams
+     * leave it pending for good, and a queue is exactly where that would stall
+     * everything behind it.
+     *
+     * It cannot cut short a render that is merely slow: the callback needs the
+     * main thread, and a synchronous layout is holding it. Keeping the work off
+     * the critical path is what `pump` is for; this only stops a hung diagram
+     * from taking the rest of the page with it.
+     */
+    function enqueue(block: HTMLElement): Promise<void> {
+        return Promise.race([
+            draw(block),
+            new Promise<void>((resolve) => setTimeout(resolve, RENDER_TIMEOUT_MS)),
+        ]).catch(() => undefined);
+    }
+
+    async function draw(block: HTMLElement): Promise<void> {
+        // Kept on first render so a theme switch can re-render from the
+        // definition rather than from the SVG it produced last time.
+        const source = block.dataset.mermaidSource || block.textContent || '';
+        if (!source.trim()) return;
+        block.dataset.mermaidSource = source;
+
+        const api = await load();
+        counter += 1;
+        try {
+            const { svg } = await api.render(`mermaid-${counter}`, source);
+            block.innerHTML = svg;
+            block.dataset.mermaidRendered = 'true';
+        } catch {
+            // Leave the definition visible. A diagram that will not parse is
+            // still readable as text, and the page keeps its layout.
+            delete block.dataset.mermaidRendered;
+        }
+    }
+
+    function start(): void {
+        const blocks = Array.from(
+            document.querySelectorAll<HTMLElement>('pre.mermaid'),
+        );
+        if (blocks.length === 0) return;
+
+        // A single mermaid render costs a good fraction of a second, and the
+        // deeper /advanced/ pages carry seventeen. Each is drawn as it comes
+        // near the viewport, so what the reader is looking at is always the
+        // next thing built.
+        watcher = new IntersectionObserver(
+            (entries, observer) => {
+                for (const entry of entries) {
+                    if (!entry.isIntersecting) continue;
+                    observer.unobserve(entry.target);
+                    schedule(entry.target as HTMLElement);
+                }
+            },
+            { rootMargin: `${QUEUE_MARGIN_PX}px 0px` },
+        );
+        for (const block of blocks) watcher.observe(block);
+
+        // The theme toggle rewrites data-theme on <html>. Mermaid bakes its
+        // colours into the SVG at render time, so the diagrams have to be built
+        // again rather than restyled.
+        //
+        // Through the same queue as everything else: re-rendering seventeen
+        // diagrams at once is the same freeze as drawing them at once, and the
+        // theme toggle is a worse moment for it because the reader just
+        // clicked something and is waiting to see what happened.
+        //
+        // Only the ones already drawn are redrawn. The rest are still being
+        // watched and will pick up the current theme when they are reached.
+        // The existing SVG stays in place while its replacement is built:
+        // clearing it first put the raw `graph TD` source back on screen for
+        // the second or so a re-render takes.
+        new MutationObserver(() => {
+            for (const block of document.querySelectorAll<HTMLElement>(
+                'pre.mermaid[data-mermaid-rendered]',
+            )) {
+                schedule(block);
+            }
+        }).observe(document.documentElement, {
+            attributes: true,
+            attributeFilter: ['data-theme'],
+        });
+    }
+
+    if (document.readyState === 'loading') {
+        document.addEventListener('DOMContentLoaded', start, { once: true });
+    } else {
+        start();
+    }
+</script>
+
+<style is:global>
+    /*
+     * The fix for the /advanced/ pages freezing, and the reason is worth
+     * writing down because the rule looks unrelated to diagrams.
+     *
+     * `mermaid.render` sizes every label by putting it in the live document
+     * and reading its geometry back with getBoundingClientRect, which forces a
+     * synchronous layout each time — a CPU profile of one scroll through
+     * /advanced/middleware/ spent 31% of its samples in that one call. The
+     * cost of each of those layouts is the cost of laying out the whole
+     * article, and these pages are long ones.
+     *
+     * Measured on that page, rendering its seventeen diagrams:
+     *
+     *     the same diagrams in an empty document      1.1s
+     *     with this stylesheet but no page content    1.1s
+     *     with the page content but no stylesheet     0.9s
+     *     as shipped, both together                  38.0s
+     *     both, with this rule                        9.9s
+     *
+     * Neither the content nor the CSS is slow on its own; it is laying out
+     * this much content under this stylesheet, over and over, that costs. This
+     * rule lets the browser skip layout for the blocks that are off screen, so
+     * a forced layout only pays for what is actually visible. The worst single
+     * frozen stretch went from 7.4 seconds to 1.9.
+     *
+     * `contain-intrinsic-size: auto` remembers each block's last real size, so
+     * the scrollbar does not jump as blocks come in and out of range.
+     */
+    .sl-markdown-content > * {
+        content-visibility: auto;
+        contain-intrinsic-size: auto 300px;
+    }
+
+    /* Skipped layout means skipped rendering, and a printer has no viewport
+       to be outside of. */
+    @media print {
+        .sl-markdown-content > * {
+            content-visibility: visible;
+        }
+    }
+
+    pre.mermaid {
+        display: flex;
+        justify-content: center;
+        margin: 1.5rem 0;
+        padding: 1.25rem;
+        overflow-x: auto;
+        background: var(--sl-color-black);
+        border: 1px solid var(--sl-color-gray-5);
+        border-radius: 0.5rem;
+    }
+
+    /* Until it renders it is still a code listing, so it should read as one. */
+    pre.mermaid:not([data-mermaid-rendered]) {
+        display: block;
+        font-family: var(--sl-font-mono);
+        font-size: 0.8125rem;
+        line-height: 1.6;
+        white-space: pre;
+    }
+
+    /* useMaxWidth is off, so a wide graph keeps its natural size and this
+       container scrolls. Shrinking it to the column width instead made the
+       labels on the larger /advanced/ graphs too small to read. */
+    pre.mermaid[data-mermaid-rendered] {
+        display: block;
+        text-align: center;
+    }
+
+    pre.mermaid[data-mermaid-rendered] svg {
+        height: auto;
+        max-width: none;
+    }
+</style>

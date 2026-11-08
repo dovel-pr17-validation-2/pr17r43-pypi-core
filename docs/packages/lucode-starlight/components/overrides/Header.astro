@@ -1,0 +1,92 @@
+---
+import config from 'virtual:starlight/user-config';
+import Search from './Search.astro';
+import SiteTitle from './SiteTitle.astro';
+import MobileMenuToggle from './parts/MobileMenuToggle.astro';
+
+/** render the `Search` component if Pagefind is enabled or the default search component has been overridden. */
+const shouldRenderSearch =
+    config.pagefind || config.components.Search !== '@astrojs/starlight/components/Search.astro';
+---
+
+<div class="header-bar">
+    <div class="header-left">
+        <MobileMenuToggle />
+        <SiteTitle />
+    </div>
+
+    <div class="header-search">
+        {shouldRenderSearch && <Search />}
+    </div>
+
+    <div class="header-right" aria-hidden="true"></div>
+</div>
+
+<style>
+    .header-bar {
+        display: grid;
+        grid-template-columns: 1fr auto 1fr;
+        align-items: center;
+        gap: calc(var(--spacing) * 3);
+        width: 100%;
+    }
+
+    .header-left {
+        display: flex;
+        align-items: center;
+        justify-self: start;
+        min-width: 0;
+    }
+
+    .header-left :global(.site-title) {
+        margin-right: 0;
+    }
+
+    .header-left :global(.logo) {
+        max-height: 3rem;
+        max-width: 3rem;
+    }
+
+    .header-right {
+        /* Balanced spacer: keeps the search bar at the exact center of the screen. */
+        justify-self: end;
+    }
+
+    .header-search {
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        justify-self: center;
+        width: clamp(14rem, 50vw, 22rem);
+        max-width: 100%;
+        min-width: 0;
+    }
+
+    /*
+     * Mobile: logo hidden entirely — header shows the menu toggle + centered
+     * search. Flexbox centering keeps the search dead-center with only the
+     * toggle visible; the toggle is absolutely positioned so it never affects
+     * the search's center.
+     */
+    @media (max-width: 767px) {
+        .header-bar {
+            display: flex;
+            justify-content: center;
+            gap: calc(var(--spacing) * 2);
+        }
+
+        .header-left {
+            position: absolute;
+            left: 0;
+            justify-self: auto;
+        }
+
+        .header-left :global(.site-title) {
+            display: none;
+        }
+
+        .header-right {
+            display: none;
+        }
+    }
+</style>

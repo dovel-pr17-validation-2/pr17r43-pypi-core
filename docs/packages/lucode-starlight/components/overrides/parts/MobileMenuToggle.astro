@@ -1,0 +1,69 @@
+<button
+    class="show-modal"
+    popovertargetaction="toggle"
+    popovertarget="drawer"
+    aria-label="Open navigation menu"
+    aria-expanded="false"
+>
+    <svg
+        xmlns="http://www.w3.org/2000/svg"
+        width="24"
+        height="24"
+        viewBox="0 0 24 24"
+        fill="none"
+        stroke="currentColor"
+        stroke-width="2"
+        stroke-linecap="round"
+        stroke-linejoin="round"
+    >
+        <line x1="4" x2="20" y1="6" y2="6"></line>
+        <line x1="4" x2="20" y1="12" y2="12"></line>
+        <line x1="4" x2="20" y1="18" y2="18"></line>
+    </svg>
+</button>
+
+<style>
+    .show-modal {
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        width: 2.5rem;
+        height: 2.5rem;
+        padding: 0;
+        border: none;
+        border-radius: 0.5rem;
+        background: transparent;
+        color: var(--foreground);
+        cursor: pointer;
+
+        svg {
+            width: 1.5rem;
+            height: 1.5rem;
+            pointer-events: none;
+        }
+
+        @media (hover: hover) {
+            &:hover {
+                background: color-mix(in oklab, var(--foreground) 8%, transparent);
+            }
+        }
+    }
+
+    /* Desktop: the toggle is hidden — navigation lives in the sidebar. */
+    @media (min-width: 768px) {
+        .show-modal {
+            display: none;
+        }
+    }
+</style>
+
+<script>
+    const btn = document.querySelector('.show-modal');
+    const drawer = document.getElementById('drawer');
+    if (btn && drawer) {
+        btn.addEventListener('click', () => {
+            const isOpen = drawer.matches(':popover-open');
+            btn.setAttribute('aria-expanded', String(isOpen));
+        });
+    }
+</script>

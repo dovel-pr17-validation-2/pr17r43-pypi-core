@@ -1,0 +1,143 @@
+"""
+sillo.record.scopes — Query scopes (local and global) inspired by Laravel Eloquent.
+
+Local scopes are methods prefixed with ``scope_``.  Global scopes are
+automatically applied to every query on a model.
+"""
+
+from __future__ import annotations
+
+from collections.abc import Callable
+
+from tortoise.manager import Manager
+from tortoise.queryset import QuerySet
+
+from .casting import HasCasts
+
+
+class ScopeRegistry:
+    """Registry of global scopes applied to every query."""
+
+    def __init__(self):
+        """Init"""
+        self._global_scopes: list[Callable] = []
+
+    def add(self, scope: Callable) -> None:
+        """Register a global scope. ``scope(queryset) -> queryset``."""
+        self._global_scopes.append(scope)
+
+    def remove(self, scope: Callable) -> bool:
+        """Remove a global scope. Returns True if found."""
+        try:
+            self._global_scopes.remove(scope)
+            return True
+        except ValueError:
+            return False
+
+    def apply(self, queryset):
+        """Apply all registered scopes to *queryset*."""
+        for scope in self._global_scopes:
+            queryset = scope(queryset)
+        return queryset
+
+    def without_global_scopes(self, queryset):
+        """Return the queryset without applying any global scopes."""
+        return queryset
+
+
+class HasScopes:
+    """Mixin that adds scope support to a model class.
+
+    Usage::
+
+        class User(Model, HasScopes):
+            @classmethod
+            def scope_active(cls, queryset):
+                return queryset.filter(is_active=True)
+
+            @classmethod
+            def scope_vip(cls, queryset):
+                return queryset.filter(plan="vip")
+
+        active_vip = await User.active().vip().all()
+    """
+
+    _scope_registry: ScopeRegistry | None = None
+
+    @classmethod
+    def add_global_scope(cls, scope: Callable) -> None:
+        """Register a global scope applied to ALL queries on this model."""
+        if cls._scope_registry is None:
+            cls._scope_registry = ScopeRegistry()
+        cls._scope_registry.add(scope)
+
+    @classmethod
+    def without_global_scopes(cls):
+        """Return a queryset without global scopes applied."""
+        return cls._meta.manager.without_global_scopes()  # ty: ignore[unresolved-attribute]
+
+    @classmethod
+    def apply_scopes(cls, queryset):
+        """Apply Scopes"""
+        if cls._scope_registry is not None:
+            return cls._scope_registry.apply(queryset)
+        return queryset
+
+
+class RecordQuerySet(QuerySet):
+    """Tortoise QuerySet with chainable ``scope_*`` model methods."""
+
+    def __getattr__(self, name: str):
+        scope = getattr(self.model, f"scope_{name}", None)
+        if scope is None:
+            raise AttributeError(
+                f"'{type(self).__name__}' object has no attribute '{name}'"
+            )
+
+        def apply_local_scope(*args, **kwargs):
+            return scope(self, *args, **kwargs)
+
+        return apply_local_scope
+
+    def without_global_scopes(self):
+        """Return this queryset rebuilt without model-level global scopes."""
+        queryset = self.__class__(self.model)
+        queryset._db = self._db
+        return queryset
+
+    def update(self, **kwargs):
+        """Apply ``_casts`` to the values before handing them to the database.
+
+        ``save()`` and the bulk helpers encode cast fields on the way out, but
+        this path never builds an instance, so a queryset update wrote the raw
+        Python value straight into a column whose other writers had encoded it.
+        A JSON cast stored ``"{'a': 1}"`` instead of ``{"a": 1}``, and an
+        encrypted one stored the plaintext.
+        """
+        casts = getattr(self.model, "_casts", None)
+        if casts:
+            encoded = {}
+            for key, value in kwargs.items():
+                if key in casts and value is not None:
+                    # `get_cast` reads only `_casts`, a ClassVar, so the model
+                    # class stands in for the instance it is written against.
+                    encoder, _ = HasCasts.get_cast(self.model, key)  # ty: ignore[invalid-argument-type]
+                    if encoder is not None:
+                        value = encoder(value)
+                encoded[key] = value
+            kwargs = encoded
+        return super().update(**kwargs)
+
+
+class RecordManager(Manager):
+    """Default manager that applies model global scopes."""
+
+    def get_queryset(self) -> RecordQuerySet:
+        queryset = RecordQuerySet(self._model)  # ty: ignore[invalid-argument-type]
+        apply_scopes = getattr(self._model, "apply_scopes", None)
+        if apply_scopes is not None:
+            return apply_scopes(queryset)
+        return queryset
+
+    def without_global_scopes(self) -> RecordQuerySet:
+        return RecordQuerySet(self._model)  # ty: ignore[invalid-argument-type]

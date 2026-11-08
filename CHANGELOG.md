@@ -1,0 +1,1038 @@
+# Changelog
+
+All notable changes to Sillo are documented here.
+
+The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
+and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
+
+## [1.2.1] - 2026-10-19
+
+### Added
+
+- The `s3` storage driver the documentation and the `storage-s3` extra already
+  described now ships (#458, #485). `sillo.storage.drivers.s3.S3Driver`
+  implements the same `Driver` contract as the local and memory drivers,
+  signing requests with AWS Signature Version 4 in pure Python over `httpx`
+  rather than depending on boto3. It works with AWS S3, MinIO, Cloudflare R2,
+  Backblaze B2, DigitalOcean Spaces, Wasabi and Ceph, supports path-style and
+  virtual-hosted addressing, a key prefix, a separate public endpoint for
+  presigned URLs, streaming writes and range reads, paged listings, and
+  creating a missing bucket on first write. Install it with
+  `sillo[storage-s3]`.
+- `sillo.record.AnyJSONField` stores ordinary JSON-compatible Python values,
+  including bare strings, without requiring callers to pre-encode them (#460).
+
+### Fixed
+
+- `HTTPClient` with configured middleware no longer fails every request. The
+  middleware chain consumes each link with `async for`, but the terminal call
+  was `httpx.AsyncClient.send` -- a coroutine function -- passed in directly,
+  so any `middlewares=` entry raised `TypeError: 'async for' requires an object
+  with __aiter__` before a request left the process. The terminal call is now
+  adapted to the chain's async-iterator contract (#455).
+
+## [1.2.0] - 2026-10-08
+
+Faster JSON and routing with no change in behaviour, middleware on routes in
+every form `app.use()` accepts, distributed locks on the cache, response
+status and headers from `HTTPClient`, and failed queue jobs that retry and
+settle. Nothing here removes or renames a public name.
+
+### Added
+
+- Route-level and router-level `middleware=` accept every form `app.use()`
+  does (#463): raw ASGI middleware classes, already-built instances such as
+  `RateLimit(limit=5, window=60)`, `DefineMiddleware`, and
+  `(factory, args, kwargs)` tuples, alongside `(ctx, call_next)` functions and
+  `BaseMiddleware`. This applies to `Route(middleware=...)`, the verb
+  decorators on the app and on routers, `Router(middleware=...)` and
+  `Router.use()`. Previously a route raised `TypeError` at request time for
+  anything but a dispatch function.
+- `sillo.middleware.define.normalize_middleware()`, the single reading of what
+  a middleware is, now shared by `SilloApp.use`, `Router.use` and routes.
+- `HTTPClient` calls take a keyword-only `with_response=True` (#475), which
+  returns a `ClientResponse` carrying `status_code`, `headers`, `is_success`,
+  the underlying `raw` httpx response and `body`, the same decoded value the
+  call returns without the flag. Callers that need a status code, a
+  `Retry-After` or a signature header no longer have to reach for the private
+  `_send`. The flag changes what wraps the result, never how the body is read.
+- Distributed lease locks (#461, #477): `cache.lock(name, lease=...,
+  blocking_timeout=...)` returns a `Lock` backed by `MemoryCache` (one process)
+  or `RedisCache` (every process sharing the Redis database). Every lock is a
+  lease, so a crashed owner cannot block work forever, and renewal and release
+  are tied to the owner's token. `Lock` and `LockNotAcquiredError` are
+  exported from `sillo.cache`.
+- `sillo.cache.MISSING` (#459, #479), the public cache-miss sentinel. Backends
+  return it on a miss or an expiry, so a miss can be told apart from a cached
+  `None` by identity. The internal `_MISSING` alias still works.
+
+### Fixed
+
+- A queue worker now retries a failed job and settles it (#462, #476). It
+  persists the attempt count and, below the job's limit, puts the job back for
+  a delayed retry through an atomic Redis release that replaces the in-flight
+  claim. At the limit it calls the job's `failed()` and acknowledges the
+  message, so a job that keeps failing stops being redelivered.
+- `HTTPClient()` can now be started without a base URL (#456). An empty
+  `base_url` was passed to `httpx.AsyncClient(base_url=None)`, which raises
+  `TypeError: Invalid type for url`, so a base-URL-less client could not be
+  constructed at all -- even though httpx itself is happy without one as long
+  as every request URL is absolute. `start()` now omits the argument when no
+  base URL is configured, which is what makes a client that talks to several
+  hosts with absolute URLs possible. Supplying a base URL is unchanged: the
+  client never had this bug when one was given.
+
+### Performance
+
+None of these changes behaviour: each is checked against the code it
+replaces, on random inputs as well as fixed ones, and each falls back to the
+old path rather than guess.
+
+- A handler that returns a plain `dict` or `list` is serialized by the C JSON
+  encoder directly, instead of being rebuilt in Python by `jsonable_encoder`
+  first. Two hundred rows of plain data went from about 1.7 ms to 0.56 ms.
+  Any payload the shortcut cannot be sure of (NaN, a key type JSON has no form
+  for, a registered custom encoder) takes the old path and gets the old
+  result or the old error. Returning a bare string or an `Enum` is unchanged.
+- Payloads holding datetimes, UUIDs, Decimals and the like keep the C encoder
+  and hand it only the values it cannot write, through `encode_node`, a
+  `default=` hook that gives exactly what `jsonable_encoder` gives for each
+  value. Two hundred such rows went from about 3.6 ms to 1.9 ms, in both
+  `json(...)` and plain returns.
+- Routes carry the literal text their pattern begins with, and the router
+  skips a route whose prefix the request path does not start with, without
+  calling it. The scan is unchanged in order and in who wins; a route class
+  that overrides `match` is still always asked. A request matching the last of
+  300 routes went from about 390 µs to 150 µs.
+- Per request: the handler's sync-or-async check is remembered per handler,
+  `collapse_excgroups` is a small class instead of a generator, and a
+  response's `Content-Length` no longer scans an empty header list.
+  A route returning a string is about 15 % cheaper.
+
+### Documentation
+
+- The cache guide documents distributed locks (#478).
+- A Performance guide: which server and worker settings matter most (with
+  measured numbers for `uvicorn`, `uvloop`, `httptools` and Granian), what a
+  request costs inside Sillo, and how to profile your own app.
+
+### Changed
+
+- One built middleware instance can be attached to several routes or routers.
+  Each attachment binds a shallow copy, so the copies keep their own `.app`
+  while sharing the instance's configuration, strategy and backend (one
+  `RateLimit` on two routes enforces one limit across both).
+- A route's `middleware=` list now rejects a malformed `(factory, ...)` tuple
+  when the route is created, instead of failing on the first request.
+
+## [1.0.1] - 2026-09-30
+
+Fixes two record-model bugs found while building on Sillo 1.0. Both change a
+default, so read the notes under Changed before upgrading.
+
+### Fixed
+
+- `Model.get_or_none()` can be chained (`await Model.get_or_none(...)
+  .select_related(...)`), as in Tortoise (#464). It was a coroutine, so the
+  chained method was looked up on the coroutine and raised `AttributeError`.
+- `Model.to_dict()` no longer fails JSON encoding on models that have relations
+  (#465). Relations that were not fetched are lazy query handles, and they were
+  being placed in the dict.
+
+### Changed
+
+- `Model.get_or_none()` now returns `None` only when no row matches. It used to
+  catch every exception, so database errors and two matching rows also came back
+  as `None`; they now raise (`MultipleObjectsReturned` for the latter). This
+  also stops `get_or_create()` from inserting a duplicate when its lookup is
+  ambiguous.
+- `Model.to_dict()` and `SerializesToDictMixin.to_dict()` serialize columns
+  only by default. A foreign key's `<name>_id` column is still included; the
+  relation itself (`author`) is not, even when it was fetched. Pass
+  `relations=True` (or the relation names) to include relations that were
+  already fetched with `fetch_related()` / `prefetch_related()`.
+
+### Added
+
+- `to_dict(relations=...)` and `to_json(relations=...)`: `True` or a list of
+  relation names. Only fetched relations are included, nesting is bounded by
+  `max_depth`, and an unknown name raises `ValueError`.
+- `Model.to_dict()` accepts `max_depth`, as the mixin already did.
+
+## [1.0.0] - 2026-09-26
+
+Sillo 1.0 is the stable release of the context-based framework API.
+
+### Added
+
+- Stable routing, dependency injection, middleware, queues, scheduler,
+  WebSockets, OpenAPI, records, authentication, storage, mail, and testing
+  integrations documented in the v1.0 manual.
+
+### Changed
+
+- The v1.0 handler and application APIs are now the supported public surface.
+- The package is published as a production/stable release for Python 3.10+.
+
+## [1.0.0rc1] - 2026-09-22
+
+The first release candidate of 1.0.
+
+### Changed
+
+- **`Depend(fn, get_context=...)` now defaults `get_context` to `False`.** Most dependencies need no context at all — a settings object, a computed value, a sub-dependency built from other extractors — and previously still had to declare a leading, unused context parameter (conventionally named `_`) to satisfy the old default of `True`. A dependency that does need the active context now opts in explicitly with `Depend(fn, get_context=True)`; without it, the dependency's own first parameter is analyzed like any other, eligible for `Depend` or an extractor default, and nothing is passed positionally at call time. **This is a breaking change**: every existing `Depend(fn)` call whose `fn` reads the context off its first parameter needs `get_context=True` added, or that parameter silently stops receiving the context (and instead has whatever `Query`/`Header`/`Depend` default it declares, if any, or a missing-argument error if none). `sillo.work.dependency`'s built-in providers (`scheduler`, `queue_connection`, `events`, `default_queue`) all need it, since each reads `ctx.base_app`.
+- **A `raise ... from ...` cascade in the terminal error block now boxes each link.** A chained cause used to collapse to a single `from Type: message` line, unreadable once a few wrapping layers stacked up. Each cause now gets its own bordered box (type, message, location, the line it broke on), stacked under `caused by`; a chain deeper than four links folds the rest into a one-line `… N more` summary.
+
+## [1.0.0a2] - 2026-09-18
+
+The second alpha of 1.0.
+
+### Added
+
+- **`Depend(fn, get_context=False)`.** A dependency previously always had its first positional parameter reserved for the context, forcing dependencies that don't need it to declare a leading, unused parameter (often named `_`). `get_context=False` opts out: no context is passed positionally, and the callable's own first parameter is analyzed normally, so it can carry a `Depend(...)` or extractor default of its own.
+
+### Fixed
+
+- **A rejected CSRF request now carries a usable token.** A 403 for a missing or invalid token went out without a `Set-Cookie`, even though a fresh token had already been minted for it — a client with no cookie yet (its first request is a POST, or an earlier `Set-Cookie` was dropped by a CDN or proxy) got a 403 with nothing to retry with, and every retry failed the same way.
+- **A `Group` whose own mount prefix carries a path parameter now matches.** `Group(path="/tenants/{id:int}", app=...)` stripped the *literal template text* (`{id:int}` included) off the request path instead of the text the pattern actually matched, so a request under such a group fell through to the mounted app with its path untouched and 404'd there instead.
+
+### Removed
+
+- **`SilloApp.wrap_asgi(...)` is gone.** `app.use(...)` now accepts a raw ASGI middleware factory directly, in place of a dispatch function — sillo infers which form it is from the middleware's `__call__` signature (three required positional parameters is raw ASGI, two is dispatch), or `raw=True`/`raw=False` states it explicitly. `app.wrap_asgi(mw, **kwargs)` becomes `app.use(mw, **kwargs)` (or `app.use(mw, raw=True, **kwargs)` when the signature is ambiguous, e.g. a factory taking only the next app). `Router.use(...)` gained the same `raw`/`*args`/`**kwargs` parameters.
+
+## [1.0.0a1] - 2026-09-12
+
+The first alpha of 1.0 — **the context rewrite**. This is a breaking release
+with no compatibility shims. Install with
+`pip install --pre sillo-framework==1.0.0a1`.
+
+An alpha: the surface below is what 1.0 is expected to look like, but it is not
+frozen yet, and API may still change before `1.0.0`.
+
+### Added
+
+- **Host-scoped routers — `Router(host=...)`.** A router only answers requests whose `Host` header matches. Exact (`admin.example.com`) or a single-label wildcard (`*.example.com`). A request to another host falls through to the rest of the app.
+- **Version-scoped routers — `Router(version=...)`.** A router only answers requests carrying a matching `X-API-Version` header, or an `Accept` media type with a `version=<value>` parameter. Lets a `v1` and `v2` router share the same paths and be picked by the client.
+- **`Router(middleware=[...])`.** Register router middleware at construction — dispatch callables, `DefineMiddleware`, or `(cls, args, kwargs)` tuples — instead of a run of `router.use(...)` calls. First in the list is the outermost layer.
+- **`SilloApp(root_path=...)`.** A mount prefix a reverse proxy strips before forwarding. It is folded into `scope["root_path"]`, removed before route matching, and re-added by `ctx.url_for(...)` and the OpenAPI `servers` block, so generated links stay correct.
+- **`SilloApp(force_https=True)`.** Any plain-`http` request is answered with a 308 to the `https` URL. `X-Forwarded-Proto: https` from a proxy is honoured, so a TLS-terminating proxy in front of an `http` app does not loop.
+- **`SilloApp(trailing_slash=...)` / `Router(trailing_slash=...)`.** `"strict"` (default, `/x` ≠ `/x/`), `"redirect"` (308 to the registered form), or `"ignore"` (serve it in place).
+- **Declarative redirects — `app.redirect(path, to, *, status_code=307, ...)`** (and `Router.redirect`). Registers a redirect-only route, no handler. Placeholders shared by both sides are substituted (`app.redirect("/u/{id}", "/users/{id}")`); a mount prefix and the query string are carried across. Hidden from the schema.
+- **`app.print_routes()`** and `sillo.core.routing.{iter_routes, format_routes, print_routes}` — walk the router and every mount, fold prefixes in, and render `METHODS  PATH  handler  (name)` rows for a startup log or a REPL.
+- **New path converters**: `bool` (`true`/`1`/`yes`/`on` and their negatives, any case → real `bool`), `date` (`YYYY-MM-DD` → `datetime.date`), `datetime` (ISO 8601, `Z` accepted → `datetime.datetime`), `ulid` (26 Crockford base32 chars), `alpha` (`[A-Za-z]+`), `alnum` (`[A-Za-z0-9]+`).
+- **`priority=` on routes.** `@app.get(..., priority=10)` (also on `Route(...)`, `add_route(...)`, and `ws_route(...)`) sets an explicit match-ordering weight. Routes are tried in descending priority, then by path specificity, then registration order. Raise it to force a route ahead of an overlapping one; use a negative value to make a route a deliberate fallback.
+- **`SilloApp(route_order=...)` / `Router(route_order=...)`.** `"specificity"` (the new default) or `"registration"` to restore the historical first-registered, first-matched behavior for a whole application. Documented in [Routing → Route matching order](https://sillo.build/v1.0/guides/routing/#route-matching-order).
+- **`app.dependency_overrides`** and **`app.override(original, replacement)`.** Swap a `Depend(...)` callable for a test double, FastAPI-style. Matched by identity against the exact function passed to `Depend`, and reached through every nested dependency in the tree, not only the top-level one. `app.override(...)` is a context manager that restores the previous mapping (present or absent) on exit, including on exception; assign `app.dependency_overrides[original] = replacement` directly for a suite-wide swap that outlives a single `with` block.
+
+### Changed
+
+- **A handler takes one leading argument: the context.** `HttpContext` on an
+  HTTP route, `WebSocketContext` on a WebSocket route. Path parameters,
+  dependencies and validation markers follow it, bound by name as before:
+
+  ```python
+  from sillo import SilloApp, HttpContext, json
+
+  app = SilloApp()
+
+  @app.get("/users/{id:int}")
+  def show(ctx: HttpContext, id: int):
+      return json({"id": id})
+  ```
+
+  `BaseContext` carries `scope`, `headers`, `cookies`, `path_params`,
+  `query_params`, `state`, `user`, `client`, `app` and `url_for`.
+  `HttpContext` adds `method`, `await ctx.json`, `await ctx.body`,
+  `await ctx.form`, `ctx.files` and `ctx.validated_data`.
+
+- **Responses are functions, in `sillo.responses`**, every name re-exported
+  from `sillo` — bodies (`json`, `text`, `html`, `xml`, `raw`, `empty`), status
+  shorthands (`created`, `accepted`, `no_content`), redirects, files
+  (`file`, `download`), streaming (`stream`, `ndjson`, `sse`), pagination
+  (`paginate`, `apaginate`, which take `ctx` first) and `abort` / `not_found`,
+  which raise rather than return. Each builder returns a `BaseResponse`
+  subclass carrying the chainable half (`status`, `cache`, `set_header`,
+  `set_cookie`, …), each returning `self`. Import from the module when the file
+  also needs the stdlib `json`/`html` or the `file` builtin.
+
+- **WebSocket routes bind path parameters.** They were read from
+  `scope["path_params"]`, which the router never writes, so the keyword
+  arguments a handler declared were always empty. Note that the registration
+  name is `ws_route` / `add_ws_route`; there is no `@app.websocket(...)`.
+
+- **An unhandled request error logs a structured block, not a raw traceback.** `sillo.handlers.error_report` keeps only the frames in *your* code:
+
+  ```
+  💥 oops — KeyError: 'ABC-9'
+      request   GET /catalog/ABC-9
+      at        api/catalog.py:14   in show
+                → price = lookup(catalog, sku)
+      at        pricing/rules.py:2   in lookup
+                   1   def lookup(catalog, sku):
+               ›   2       price = catalog["items"][sku]["price"]
+                                   ^^^^^^^^^^^^^^^^^^^^^
+                   3       return price * 1.2
+      with      catalog={'items': {}}, sku='ABC-9'
+  ```
+
+  Each calling frame is one line; the frame it broke on gets a window of real source with the line marked `›` (bright, its neighbours dim) and a caret under the exact expression (Python 3.11+, single-line). `file:line` is cyan, the function bold. `with` lists the raising frame's own locals — scalars and small containers verbatim, a big one as `<dict len=N>`, a name that reads like a secret as `***`. `SILLO_TRACE` sets the depth — `off`, `app` (default while `debug` is on), `full` (append the raw traceback). Off a terminal or with `debug` off, nothing is rendered; one structured line goes to the logger instead. Every 500 also stopped logging two-to-three times — `sillo.core.error.handler` was creating a child logger with its own handler that still propagated to the parent's.
+- **Overlapping routes now match most-specific-first, not registration-first.** A literal segment beats a parameter at the same position, a narrow converter (`:int`, `:float`, `:uuid`) beats a plain string parameter, and both beat a `:path` catch-all — decided left to right. `@app.get("/users/{id}")` no longer shadows a `@app.get("/users/me")` registered after it. The ordering is computed once, lazily, on the first request after registration, so per-request dispatch is unchanged. Pass `route_order="registration"` to opt out.
+- **A 404 response no longer carries a traceback.** The stack of `raise NotFoundException` is the router's, not the caller's — it named internal framework paths and told a developer nothing about their own code. Debug mode still widens the *message* (the exception's `detail` instead of the generic sentence); it no longer adds a `traceback` field.
+- **The 404 and debug (500) HTML pages are restyled** to match Sillo's own terminal aesthetic — dark background, monospace, brand red (`#fc0345`) — instead of a light Arial page for 404s and a page whose `--error`/accent variable was, by mistake, green (`#02ba42`) rather than red for the debug page. Both pages, and two other spots on the debug page that bypassed the CSS variables with a hardcoded color, now flow from the same palette as the terminal error log.
+- **`SilloApp(debug=...)` now defaults to `False`.** It previously defaulted to `True`, so a project that never passed `debug` explicitly shipped with the full debug page — and a verbose terminal error log — on by default. An app that wants debug output in local development now has to say so.
+- **The terminal error trace no longer depends on `debug`.** It only ever prints to the server's own terminal — nothing in it reaches a client — so it now defaults on whenever `stderr` is an actual terminal, regardless of `debug`. Previously it rode on `debug`'s default, so the flip above would otherwise have silently taken the pretty trace away from local development along with the (correct) HTTP-facing change. `SILLO_TRACE` still overrides either way.
+
+### Removed
+
+- **`Request`, the `Response` manager and the `Responder` builder are gone**,
+  and nothing is shimmed. `sillo/core/http/request.py` no longer exists.
+- **The built-in admin panel is no longer part of the framework.** It is its
+  own package now — [`warder`](https://sillo.build/packages/warder/).
+- **`Depend(get_request=True)` / `Depend(get_context=True)`** — a dependency
+  takes the context as its first positional parameter instead.
+
+
+## [0.3.2.dev1] - 2026-09-07
+
+A development pre-release for testing. Install with `pip install --pre sillo-framework==0.3.2.dev1`.
+
+### Added
+
+- Dependency injection on WebSocket routes. A `@app.ws_route(...)` handler's signature is now analysed the same way an HTTP handler's is, so it can declare `Depend(...)` parameters — nested, cached, and `yield`-style with teardown that runs when the connection handler returns. The tree is resolved once, when the socket connects, not per message. Documented in [WebSockets → Dependency injection](https://sillo.build/v1.0/guides/websockets/#dependency-injection).
+
+### Changed
+
+- **A dependency now receives the context as its first positional argument**, exactly like a route handler — an `HttpContext` on an HTTP route, a `WebSocketContext` on a WebSocket route. The `Depend(get_request=True)` / `Depend(get_context=True)` marker is **removed**; write the context as the dependency's first parameter instead (name it `_` if unused). A dependency that declared no parameters (`def get_flag(): ...`) must now take the leading parameter (`def get_flag(_): ...`). Internally, `Depend` no longer accepts a keyword argument, and `Dependant.request_param_names` is gone.
+- **The built-in middleware is now raw ASGI** (#435). CORS, CSRF, rate limiting, session and header-normalisation middleware no longer build a parsed request per hop — each runs as an ASGI layer, and `app.use()` infers whether a middleware is raw or context-based rather than needing `raw=True`. Behaviour is unchanged; the response-header layer moved to `sillo/middleware/response_headers.py`.
+
+## [0.3.1] - 2026-08-27
+
+A test-coverage push that took the suite from 91.58% to over 95%. Each of the
+fixes below was found the same way: writing the first test that actually
+reached the code.
+
+### Fixed
+
+- **CORS `custom_error_messages` was silently discarded.** `CorsConfig.__init__`
+  built its settings dict with the argument's slot hardcoded to `None`
+  regardless of what was passed in, so every custom error message a project
+  configured was replaced with the generic `"CORS request denied."` default.
+
+- **`send_email(attachments=[...])` crashed on an `EmailAttachment` object.**
+  Passing a dict worked; passing an already-built `EmailAttachment` did not —
+  the non-dict branch called `message.add_attachment(att)`, treating the
+  whole attachment object as if it were a filename string, which raised
+  `TypeError: missing 1 required positional argument: 'content'` on every
+  call.
+
+- **`BackgroundTask.drain()` could report a negative `completed` count.**
+  `asyncio.wait()` already returns `done` and `pending` as disjoint sets, but
+  `drain()` subtracted the cancelled count from `len(done)` a second time,
+  so cancelling any pending task on timeout sent `completed` negative.
+
+- **A `Supervisor` on `RestartPolicy.ALWAYS` (or `EXPONENTIAL_BACKOFF`)
+  restarted a successful task forever.** `max_restarts` was only checked on
+  the failure path; a supervised task that kept succeeding was relaunched
+  immediately, with nothing incrementing the restart counter or checking the
+  limit, in a busy loop with no way to stop it short of `stop()`.
+
+- **`ListenerRegistry.once()` never actually unsubscribed a typed-event
+  listener.** It registered a wrapper closure with the dispatcher, then
+  called `dispatcher.forget(event, callback)` with the *original* callback —
+  `forget()` matches by identity, so it never found the wrapper it needed to
+  remove, and the listener kept firing on every dispatch instead of just the
+  first.
+
+- **The sync `@cache()` decorator deadlocked when called from inside a
+  running event loop.** The "run on a private loop in a thread" comment
+  described what should happen; the code scheduled the lookup coroutine onto
+  a brand-new `asyncio` loop via `run_coroutine_threadsafe` without ever
+  starting that loop running anywhere, so `fut.result()` waited on a
+  computation that could never occur. The private loop now actually runs in
+  a background thread for the duration of the call.
+
+## [0.3.0] - 2026-08-21
+
+### Added
+
+- `sillo.storage.current_storage()` and `sillo.storage.bucket(name)` — reach the `Storage` `setup_storage` registered, from a handler, a queue job, or a script, without the application object or a request.
+- `sillo.mail.current_mail()` and `sillo.mail.send_email(...)` — same shape, for the `MailClient` `setup_mail` registered.
+- `sillo._internals.registry.InstanceRegistry`, the shared internal mechanism behind both: a plain slot filled once at startup and read from anywhere, raising `NotConfiguredError` — not `None` — when asked before `setup_x` has run. Documented in [Instance Registry](https://sillo.build/advanced/context-binding/).
+- `useAuth(unauthorized=..., forbidden=...)` — per-route hooks that answer a failed gate directly instead of raising `AuthenticationFailed`/`PermissionDenied` for the global exception handler to catch. Each is called as `hook(ctx)`, sync or async, and its return value is sent as the response with the route handler never reached. Unset, a gate behaves exactly as before.
+
+## [0.2.1] - 2026-08-19
+
+### Changed
+
+- Replaced `itsdangerous` with an internal `sillo.helpers.signing` implementation for CSRF tokens and signed session cookies.
+- Moved `sillo.utils` modules into `sillo.helpers`.
+- Fixed `typing-extensions` dependency marker to require the package on Python < 3.13.
+
+## [0.2.0] - 2026-08-18
+
+A minor release, not a patch: `sillo.env` is new public API, and `.env` now
+loads without an application asking it to — a change in behaviour for any
+project that already had one on disk.
+
+### Added
+
+- **Sillo reads `.env` itself.** `sillo.env` is a `.env` parser written for
+  the framework: `python-dotenv` is not a dependency, is not installed as
+  one, and is not imported anywhere. The file supports quoting, escapes,
+  multi-line triple-quoted values (certificates and private keys), `export`
+  prefixes, inline comments, and `${REFERENCES}` with `${NAME:-fallback}`
+  defaults resolved against the file first and the surrounding environment
+  second.
+
+- **`.env` is loaded without being asked for.** `SilloApp(...)`, any
+  `sillo.config.Config` subclass, and the `sillo` command each load the
+  project's `.env` once per process. The file is found by searching upward
+  from the working directory and stopping at the project root, so a command
+  run from a subdirectory finds it and a `.env` in a home directory never
+  leaks in. Variables already exported win over the file; set
+  `SILLO_ENV_FILE` to name another file, or to the empty string to switch
+  automatic loading off.
+
+- **`sillo.env` public functions**: `load_env`, `find_env`, `parse_env` and
+  `env` — the last a typed single-variable read, where `cast=bool`
+  understands `true/yes/on/1` rather than Python's "any non-empty string".
+
+- **`Config` supports `env_prefix`**, so one `.env` can hold several
+  subsystems (`DATABASE_URL`, `DATABASE_POOL_SIZE`) without the field names
+  carrying the prefix. A field's Pydantic `alias` now also names the
+  environment variable it reads.
+
+- **`Config` options belong in an inner `Env` class.** An inner class named
+  `Config` still works, but Pydantic claims that name for its own deprecated
+  class-based settings and warns on every model that uses one.
+
+### Fixed
+
+- **`print(config)` no longer prints secrets.** `Config.__repr__` masked
+  fields whose names look like secrets, but `print()` calls `__str__`, which
+  Pydantic writes out in full. Both are masked now.
+
+- **The router decides "method not allowed" once.** `Route.match` and
+  `Route.handle` each compared the request's method against the route's set,
+  and spelled the comparison differently — `match` uppercased the method,
+  `handle` did not. A lowercase method matched fully and was then refused
+  405 by the route that had just matched it. The check now lives only in
+  `match`, which compares the token as sent (method tokens are case-sensitive
+  per RFC 9110 section 9.1), and the router builds the 405 itself.
+
+- **A 405's `Allow` header names every method the path supports.** The router
+  kept only the first partial match and asked that one route for the header,
+  so a path split across several routes — `@app.get("/items")` and
+  `@app.post("/items")` build two — reported `Allow: GET, HEAD` and left
+  `POST` unnamed. RFC 9110 requires `Allow` to describe the target resource,
+  so the methods are now collected across every route whose path matched.
+
+
+## [0.1.0] - 2026-08-17
+
+The first stable release. The API surface is now covered by semantic
+versioning: anything documented here is something a 0.1.x release will not
+break, and the deprecations listed below name the version that removes them
+rather than pointing at "a future release".
+
+### Added
+
+- **`sillo serve` is Sillo's own server command.** It starts the application
+  with no import string, looking for `app.main:app`, `main:app` and `app:app`
+  in turn, and can be pinned with the `SILLO_APP` environment variable or a
+  `[tool.sillo] app` entry in `pyproject.toml`. Request lines are logged with
+  their timing, and the banner links a request inspector at
+  `/__sillo/requests` that is clickable in terminals supporting OSC 8. Use
+  `--no-inspect` to leave the inspector out, or `--plain` for the underlying
+  server's own output.
+
+- **A benchmark suite**, run against FastAPI, Starlette, Django and Flask
+  through their ASGI interfaces in-process, so the numbers are framework
+  overhead rather than a measurement of the network.
+
+### Changed
+
+- **`response.set_headers(..., overide=...)` is now `override=...`.** The
+  misspelling was in the public signature of four methods. The correct
+  spelling is a normal positional parameter, so callers who passed it
+  positionally are unaffected; the misspelling survives as a keyword-only
+  alias that warns. See Deprecated below.
+
+- **JSON responses serialize the payload once**, and compactly, rather than
+  encoding it a second time to measure it.
+
+### Fixed
+
+- **argon2 was unusable even when installed.** Scheme availability derived an
+  import name from the distribution name by swapping dashes for underscores,
+  so `argon2-cffi` was probed as `argon2_cffi` and never found.
+  `hash_password(scheme="argon2")` therefore raised `InvalidSchemeError` on
+  every machine that had argon2 installed, and `set_default_scheme("argon2")`
+  failed the same way. The error's remedy was wrong too: `pip install argon2`
+  names an unrelated project. The distribution and the module are now separate
+  fields, and the message names the distribution you can actually install.
+
+- **`Request` discarded the ASGI extensions the server advertised.** The
+  constructor replaced the whole `extensions` mapping instead of adding to it,
+  so `http.response.push` and anything else the server offered was gone by the
+  time a handler could look. `send_push_promise` could never fire. Extensions
+  are now merged.
+
+- **`response.set_headers(headers, override=True)` dropped the flag** when
+  called through `Responder`, so headers were merged where the caller asked
+  for a replacement.
+
+- **`sillo serve` assumed an application rather than finding one.** It used
+  the first of three candidate locations and nothing else, so an ordinary
+  `main.py` in the working directory failed with `ModuleNotFoundError: No
+  module named 'app'`, naming a package the author had never mentioned. It
+  now tries each candidate and, when none resolves, says what it looked for
+  and how to point it elsewhere.
+
+- **`sillo.record.rollback` resolved to the wrong function.** The migration
+  command and the transaction helper share a name, and the package re-exported
+  whichever was imported last. The migration command is now
+  `rollback_migrations`.
+
+- **Exception handlers could not be typed as async.** `ExceptionHandlerType`
+  annotated a synchronous return, though every handler the framework calls is
+  awaited. Handlers now type as returning `Awaitable[Response]`, and
+  `ExceptionHandlerFor[ExcT]` types a handler narrowed to one exception class.
+
+- **Two comments stopped mypy before it started.** mypy reads any line
+  beginning `# type:` as a PEP 484 type comment and halts on a syntax error,
+  so a prose comment that happened to start that way, and an invalid
+  module-level `# type: ignore[overide]`, made the package unanalysable.
+
+### Deprecated
+
+Each of these now names its removal version. All are removed in **Sillo
+0.2.0**.
+
+- `response.set_headers(overide=...)` and `overide_all=...`: use `override`
+  and `override_all`.
+- `Router.register(...)`: mount with `Group(path=..., app=...)` or
+  `Router.mount_router(...)`.
+- `create_api_key()`: use `generate_api_key()`.
+- `AsyncEventEmitter`: `EventEmitter` supports async listeners natively.
+- `WS_1004_NO_STATUS_RCVD` and `WS_1005_ABNORMAL_CLOSURE`: the numbering was
+  off by one, so use `WS_1005_NO_STATUS_RCVD` and `WS_1006_ABNORMAL_CLOSURE`.
+
+## [0.1.0b3] - 2026-08-16
+
+### Performance
+
+- **The two built-in error layers are now raw ASGI middleware**, which is worth
+  roughly a 26x cut in framework overhead on small responses. `ServerErrorMiddleware`
+  and `ExceptionMiddleware` were dispatch middleware — `(request, response,
+  call_next)` — each wrapped in an `ASGIRequestResponseBridge` that built a
+  `Request`, a `Response`, an `anyio.Event`, a memory object stream and a
+  background task, on every request. Neither ever wanted any of it: both only
+  look at a request that raised. They now take the next app and are called with
+  `(scope, receive, send)`, constructing a request and a response only inside
+  their `except` clause.
+
+  Measured in-process against equivalent applications, driven directly through
+  their ASGI interface:
+
+  | case | before | after | FastAPI 0.141.1 |
+  | --- | --- | --- | --- |
+  | plain text | 702.8µs | 27.1µs | 48.4µs |
+  | small JSON | 730.2µs | 37.5µs | 58.9µs |
+  | int path param | 821.8µs | 38.0µs | 75.1µs |
+  | 200-row JSON | 1679.7µs | 826.0µs | 2279.3µs |
+
+  The router was never the bottleneck — it matched at ~20µs on its own. This is
+  framework overhead only, with no server, sockets or database in the numbers;
+  a handler doing a 2ms query is 2ms either way.
+
+### Added
+
+- **`app.use(middleware, *args, raw=True, **kwargs)` registers raw ASGI
+  middleware.** The argument is a factory, called `middleware(next_app, *args,
+  **kwargs)`, and what it returns is called with `(scope, receive, send)`.
+  Nothing is constructed on its behalf, so it is the cheaper form when the
+  middleware does not need a parsed request, and ASGI middleware written for
+  other frameworks drops straight in. The dispatch form is unchanged and
+  remains the default.
+
+  Extra arguments without `raw=True` now raise `TypeError` rather than being
+  silently dropped, since the dispatch form takes a middleware that is already
+  configured and there is nowhere for them to go.
+
+### Fixed
+
+- **Reading the request body from an exception handler no longer hangs.** A body
+  can only be read once off the wire, and more than one `Request` is built for a
+  connection: the router builds one, and an exception handler running after the
+  route handler already drained it gets another. The second awaited a `receive`
+  that could never produce another chunk, and the request hung until the client
+  gave up. It now fails immediately with `RuntimeError: Stream consumed`, the
+  same error a single request re-reading its own body raises. A body that was
+  never read is still available to the handler, and a dispatch middleware
+  peeking at the body still leaves it readable downstream.
+
+### Changed
+
+These are internals — neither class is exported from `sillo` or listed in
+`__all__`, and reaching them takes a deep import — but the signatures moved:
+
+- `ServerErrorMiddleware.__init__` takes the next ASGI app as its **first**
+  positional parameter: `ServerErrorMiddleware(app, handler=..., debug=...)`.
+  Keyword calls such as `ServerErrorMiddleware(debug=True)` are unaffected;
+  a positional `ServerErrorMiddleware(handler)` now binds the handler to `app`.
+- `ServerErrorMiddleware` and `ExceptionMiddleware` are called with
+  `(scope, receive, send)`, so neither can be passed to `app.use()` in its
+  dispatch form.
+- `ServerErrorMiddleware` no longer subclasses `BaseMiddleware`.
+- `ExceptionMiddleware` now holds the next app on `.app` and is rebound when the
+  chain is rebuilt, so one instance can no longer be shared between two
+  applications.
+
+Everything an application normally touches is unchanged: `app.use()` with
+dispatch functions and `BaseMiddleware` subclasses, `add_exception_handler` for
+both exception classes and status codes, handler signatures, `server_error_handler`,
+debug tracebacks, 404s, and validation errors.
+
+## [0.1.0b2] - 2026-08-15
+
+### Security
+
+- **The `encrypted` cast is now real encryption.** It was XOR against a
+  repeating key with a source comment reading *"Simple XOR + base64 for demo"*,
+  so a column named `encrypted` held recoverable plaintext. It is now Fernet
+  (AES-128-CBC with an HMAC-SHA256 tag), keyed by PBKDF2-HMAC-SHA256 over the
+  passphrase. **Values written by the old caster cannot be read by this one.**
+  They were not protected in the first place, so rewrite them from plaintext.
+  Needs the new `crypto` extra; without `cryptography` installed the cast
+  raises rather than falling back to something weaker.
+
+- **`PasswordField` no longer double-hashes non-bcrypt hashes.** Its
+  already-hashed check matched the bcrypt prefixes alone, so an argon2, scrypt
+  or pbkdf2 hash assigned to the field was hashed a second time and never
+  verified again. It now asks passlib which scheme produced the value. Added
+  `sillo.hashing.is_hashed` for the same question elsewhere.
+
+### Fixed
+
+- **`Session.extend()` wrote a float into a `DatetimeField`.** `expires_at`
+  received `datetime.now(...).timestamp() + seconds`, which the database layer
+  rejected and which made `is_expired` raise when it compared a datetime
+  against it. Nothing in the suite called `extend()`, so it went unnoticed.
+
+- **`SlugField(source_field=...)` now generates the slug.** The argument was
+  stored on the field and read by nothing, so the documented auto-generation
+  never happened and the parameter was accepted in silence. A row saved without
+  a slug now gets one from the named attribute; an explicit slug is kept.
+
+- **`QuerySet.update()` applies `_casts`.** `save()` and the bulk helpers
+  encoded cast fields, but a queryset update wrote the raw Python value into a
+  column every other writer had encoded, so a JSON cast stored a Python repr
+  and an encrypted one stored plaintext.
+
+- Response payloads are encoded once instead of twice. The default route path
+  ran `jsonable_encoder` and then handed the result to `JSONResponse`, which
+  encoded it again. A custom encoder registered on a JSON-native type
+  (`str`, `int`, `dict`, `list`) was therefore applied twice and is now applied
+  once. Encoders registered on your own types are unaffected.
+
+- The debug error page reports the full Python version. It was built from
+  `major.minor.micro`, so a crash on a pre-release rendered as though it came
+  from the final release.
+
+### Added
+
+- Python 3.14 is supported and declared. The test and type-check matrices run
+  3.10 through 3.15, and the package now carries classifiers at all, having
+  previously published none. 3.15 runs in CI without gating while it is a beta.
+
+- `crypto` extra for `cryptography`, used by the `encrypted` cast and
+  `sillo.helpers.crypto`.
+
+### Changed
+
+- `asyncio.iscoroutinefunction` replaced with `inspect.iscoroutinefunction`
+  throughout, ahead of its removal in Python 3.16.
+
+## [0.1.0b1] - 2026-08-13
+
+The first beta. The version moves off the 0.0.2 line because five of the
+changes below are breaking, and because a release carrying six security fixes
+should not look like a third patch.
+
+**This is what a plain install now gets.** Pre-releases are normally skipped
+unless asked for, but that rule only applies when there is a stable release to
+prefer — and `sillo-framework` has never published one. With every version on
+the index a pre-release, pip and uv both fall back to the newest, so
+`uv add sillo-framework` resolves 0.1.0b1 rather than the last alpha.
+
+To stay on an alpha, pin it:
+
+```bash
+uv add "sillo-framework==0.0.2a3"
+```
+
+Every finding under Security was reported privately and is fixed here. Three
+of them were features that had never worked at all rather than edge cases:
+`generate_ulid()` called an API that does not exist in the ULID package this
+project depends on, a 304 response shipped the whole body behind
+`Content-Length: 0`, and `register_transport()` could never resolve a backend
+it had registered.
+
+### Security
+
+Five findings, reported privately on 2026-08-12 and fixed here. The first two
+chain into unauthenticated account takeover for any application using the file
+session backend; that backend is not the default, so an application on the
+signed-cookie default was never exposed to them.
+
+- **A session cookie could read and write any file on the machine.**
+  `FileSessionManager` joined the cookie's value straight into a path, so
+  `session_id=../../../../etc/cron.d/x` addressed a file outside the session
+  directory — arbitrary read through the load path, arbitrary write through the
+  save path, from one request, with no authentication. `os.path.join` made it
+  worse than traversal: an absolute value discarded the configured directory
+  altogether, so `/root/.ssh/authorized_keys` needed no `../` at all.
+
+  A key must now match `[A-Za-z0-9_-]{1,128}`, which is wider than the 64 hex
+  characters `generate_session_key` produces so a project that overrides the
+  generator keeps working, and excludes every character that can address
+  another directory. A cookie that fails is treated as though none was sent —
+  the visitor gets a new session rather than an error, so the response cannot
+  be used to probe the filesystem. `_get_file_path` additionally resolves the
+  result and refuses anything that leaves the store, which covers what the
+  pattern did not anticipate, a symlinked storage directory among them.
+
+- **Logging in did not change the session identifier.** `login()` wrote the
+  user into the session and nothing else, so an identifier known before
+  authentication was still valid after it: an attacker who fixed a session key
+  in a victim's browser held an authenticated session the moment the victim
+  signed in, without stealing a cookie. `Session.cycle_key()` is new and
+  `login()` calls it. The new record is written before the old one is purged,
+  so a failure part-way through leaves a session that still works rather than
+  one dropped from under a signed-in user.
+
+- **`allow_origins=["*"]` returned `Access-Control-Allow-Credentials: true` to
+  every caller.** `allow_credentials` defaulted to `True`, and a wildcard was
+  answered by reflecting the caller's own `Origin` rather than sending `*`.
+  Browsers reject a literal `*` on a credentialed request, and reflecting is
+  precisely what evades that check — so any site could read responses
+  authenticated as your users. This was the configuration our own docstrings
+  showed.
+
+  `allow_credentials` now defaults to `False`, and combining it with a wildcard
+  raises at construction rather than being quietly downgraded: both readings of
+  that configuration are plausible, and guessing would leave whoever wrote it
+  believing the other. A wildcard now answers with the literal `*`, so the
+  response no longer varies by caller and a shared cache cannot serve one
+  origin's headers to another.
+
+- **`update_from_dict()` wrote any field named to it.** Handed a request body
+  it would set any column, including the ones deciding what a user may do. The
+  documentation already warned against passing an unvalidated body, which is
+  weaker than not doing it: models may now declare `fillable` or `guarded`, and
+  a single call may pass `only=`. A model that states none of them behaves
+  exactly as before, since plenty of callers pass a dict they built.
+
+- **A server-side session was never deleted.** `Session.save()` cleared
+  `deleted` *before* handing the session to the backend, so `if session.deleted`
+  was unreachable in both shipped stores and logging out overwrote the file with
+  `{}` instead of removing it. No data survived, so this was not exploitable —
+  but the delete path could not be tested, and session files accumulated
+  forever. The flags are now cleared after the backend runs.
+
+  Fixing that exposed the reason it had gone unnoticed: `deleted` meant two
+  things. `__delitem__` and `delete()` set it for removing *one key*, while the
+  backends read it as "purge this session". It now means only the second, which
+  is what `clear()` sets.
+
+- **A debug error page could render another request's headers.**
+  `ServerErrorMiddleware` stored the request on itself and read it back while
+  rendering. One instance serves every request — `use()` keeps the instance it
+  is given — so the attribute held whichever request wrote to it last, and the
+  page renders every header it is handed. A request that failed slowly
+  returned a concurrent request's `Cookie` and `Authorization` to the wrong
+  client. It needed `Accept: text/html`, which is to say a browser, and
+  `debug` is on by default.
+
+  The request is now passed to `generate_html`, and the attribute is gone
+  rather than synchronised: a middleware instance is shared, so per-request
+  state does not belong on it at all.
+
+  This was reachable before the chain change below, by registering
+  `ServerErrorMiddleware` through `use()` — nothing documents doing that, so
+  the exposure was small, but it was real. The framework's own instance
+  happened to be rebuilt per request, which concealed it.
+
+### Changed
+
+- **The middleware chain is assembled once, outside the request path.** It was
+  rebuilt on every request, allocating a stack of wrapper objects identical to
+  the previous request's and discarding them. It is now built in `__init__`
+  and rebuilt by `use()`, `add_middleware()` and setting `debug` — eagerly, so
+  a request only ever reads it. Routes are unaffected: they live on the
+  router, which the chain holds by reference.
+
+  Worth ~1-2% on a request, which is not why it is worth doing; it stops the
+  per-request garbage. It also turned `ServerErrorMiddleware` from a
+  per-request instance into a shared one, which is how the leak above was
+  found.
+
+- **`SilloApp.debug` is a property.** Assigning it rebuilds the chain, because
+  `ServerErrorMiddleware` is constructed with the flag and the chain is no
+  longer assembled per request. `SilloApp(debug=...)` is unchanged; the
+  instance attribute is now `_debug`.
+
+- **`ServerErrorMiddleware.generate_html()` takes the request.** The signature
+  is `generate_html(exc, request, limit=7)`. A caller still passing the old
+  shape fails with a `TypeError` at the call rather than rendering an
+  unrelated request.
+
+- **`logout()` empties the whole session** rather than removing the one entry
+  `session_key` names. A server-side store purges its record and the browser is
+  sent an expired cookie, so the identifier logged out of stops being usable by
+  anyone still holding it. Anything else the session carried goes with it. The
+  `session_key` argument is still accepted and now selects nothing, because
+  everything is removed. This is what `Session.clear()` already documented
+  itself as being for.
+
+- **`CorsConfig(allow_credentials=...)` defaults to `False`.** An application
+  relying on the old default must now say so, and cannot pair it with `"*"`.
+
+### Fixed
+
+Each of these was found by writing the first test to reach the code, which is
+why three of them are features that had never worked rather than regressions.
+
+- **`HasUlidMixin.generate_ulid()` raised `AttributeError` on every install.**
+  It called `ulid.new()`, which is the API of `ulid-py` — a different
+  distribution from the `python-ulid` this package declares. There was no
+  version of this that worked. A missing package now names the one to install
+  rather than failing on `None`.
+
+- **`register_transport()` registered a backend that could never be
+  resolved.** In `get_transport`, the `_AVAILABLE` lookup was indented into
+  the `record` branch, after its unconditional `return` — so every custom
+  backend fell through to `ValueError: Unknown event backend`, and the
+  documented plugin extension point did nothing observable. The error now
+  lists registered backends alongside the built-in four.
+
+- **`pydantic_model_from_tortoise` ignored `optional_fields` and demanded a
+  primary key.** The two decisions disagreed: `optional_fields` widened the
+  annotation to `Optional` but still passed `Field(...)`, leaving the field
+  required and satisfiable only by passing `None` explicitly, while the
+  primary key was correctly identified as not required and then given a
+  default of `...`, which is pydantic's marker for required. Every generated
+  create schema demanded an `id` the database was going to supply.
+
+- **`OperationalError` maps to 503, not 500.** Unchanged behaviour, recorded
+  because it now has a test asserting it: an operational error is the database
+  being unreachable, which is transient and worth retrying.
+
+### Testing
+
+Coverage went from 87% to 90%, and the suite from roughly 3,700 tests to
+4,247. The Redis-backed classes — the queue backend, the cache, and both
+pub/sub transports — were between 0% and 26% because they could only run with
+a server present, which is how the bugs fixed in 0.0.1a15 shipped in the first
+place. They now run against `fakeredis` through the injection points the code
+already had, so those paths are exercised on every local run rather than only
+in CI.
+
+Two things the new tests record rather than fix, because changing either is a
+decision and not a cleanup:
+
+- `PersistentTransport` cannot retry a failing listener. Its docstring
+  promises that failed deliveries are requeued with a bounded retry count, and
+  the requeue branch exists, but `BaseTransport._deliver` catches every
+  listener exception and routes it to `on_error` without re-raising — so a
+  listener that throws loses the event, which is the durability this transport
+  exists to provide.
+- Dispatch callbacks must be `async`. `_deliver` awaits them, so a synchronous
+  one raises inside the transport and is swallowed as a delivery failure.
+
+## [0.0.2a3] - 2026-08-10
+
+### Fixed
+
+- **A 405 response no longer permanently breaks a route.** `Route.handle`
+  assigned a fresh `JSONResponse` to `self.app` the first time a disallowed
+  method hit the route, silently replacing the real handler and its
+  middleware chain: every later request — even with an allowed method —
+  received 405 forever. The 405 is now built per request and returned
+  directly, with a proper `{"detail": "Method Not Allowed"}` body and a
+  sorted `Allow` header.
+
+  Also fixed in the same pass: the dispatch loop leaking the last
+  iteration's `matched_params` onto the first partial match, a dead
+  `prefix.rstrip("/")` no-op, and per-request rebuilding of a lowercased
+  method generator (methods are now compared in a single `set` check).
+  OpenAPI generation iterates sorted methods so the generated docs are
+  deterministic.
+
+## [0.0.2a2] - 2026-08-09
+
+### Removed
+
+- **`silloApp` is gone.** 0.0.2a1, released hours earlier, kept it resolvable
+  behind a `DeprecationWarning`. That bridge is removed: `from sillo import
+  silloApp` now raises `ImportError`, and `sillo.silloApp` raises
+  `AttributeError`.
+
+  ```python
+  from sillo import SilloApp
+
+  app = SilloApp(title="Projects API")
+  ```
+
+  The reasoning against a deprecation period is that an alias which still
+  works is an alias people keep writing, and every copy of it that reaches a
+  tutorial or a StackOverflow answer outlives the release that removed it.
+  The framework is early enough that a clean break costs less than a name
+  nobody can trust.
+
+  The failure is deliberately immediate and loud. Nothing resolves to a shim,
+  a subclass or `None` — an old call site fails at import, before any of your
+  code runs, rather than somewhere further in.
+
+  If you are coming from 0.0.2a1, run your suite with
+  `-W error::DeprecationWarning` first; it will point at every remaining use.
+
+## [0.0.2a1] - 2026-08-09
+
+### Changed
+
+- **The application class is now `SilloApp`.** It was `silloApp`, which is a
+  spelling no Python convention endorses — classes are `CapWords`, and a
+  lowercase-initial name reads as a function at every call site, which is
+  exactly how `app = silloApp()` looked.
+
+  The old name still resolves, from both `sillo` and `sillo.application`, and
+  emits a `DeprecationWarning` naming its removal in **0.1.0**. (Superseded:
+  0.0.2a2 removed it instead. This entry describes 0.0.2a1 as released.)
+  Nothing breaks on upgrade; the migration is one find-and-replace:
+
+  ```python
+  from sillo import SilloApp
+
+  app = SilloApp(title="Projects API")
+  ```
+
+  `silloApp` is deliberately *not* in `__all__`, so a star-import and any
+  editor completion offer only the new name.
+
+  `str(app)` now reads `<SilloApp: title>`, which matters to anyone matching
+  on dev-server output.
+
+### Fixed
+
+- **A release could ship with `sillo.__version__` reporting the wrong
+  version.** The release workflow compared the tag against `pyproject.toml`
+  only, so 0.0.1a15 published with the module still saying `0.0.1a14` and the
+  job reported success. The check now covers `sillo/__init__.py` as well, and
+  fails the release when the three disagree.
+
+## [0.0.1a15] - 2026-08-08
+
+### Fixed
+
+Everything under this heading was found by giving CI a Redis server. The Redis
+tests had always skipped themselves — no workflow ran a Redis container — so
+the cache backend, the queue backend and the pub/sub transport shipped with
+tests that had never executed anywhere.
+
+- **`RedisBackend.dequeue()` raised on every call.** `BZPOPMIN` replies with
+  `(key, member, score)` and the result was unpacked into two names, so every
+  dequeue ended in `ValueError: too many values to unpack`. The Redis queue
+  backend could not deliver a single task.
+
+- **Redis queue priority was inverted.** Tasks are scored
+  `-priority * 1e12 + created_at`, so a higher priority is a *lower* score —
+  which is what lets the memory backend pop from a min-heap. The Redis backend
+  popped with `BZPOPMAX`, serving the lowest-priority task first.
+
+- **`RedisBackend.is_duplicate()` never deduplicated.** It checked whether the
+  key existed but never claimed it, so it returned `False` forever. It is now
+  a `SET NX` check-and-set, matching `MemoryBackend` and safe against two
+  workers racing on the same key.
+
+- **`RedisTransport.subscribe()` deadlocked after `start()`.** The listener
+  loop held the pubsub connection open inside `listen()`, and redis-py's
+  `PubSub` is a single connection that cannot be used from two places at once,
+  so a subscribe waited on a connection the loop would never release. It
+  blocked the event loop itself — even `asyncio.wait_for` around the call
+  could not fire. Subscribing after `start()` is the normal path, so this hung
+  for anyone using the transport as documented. The loop now polls with
+  `get_message` under a lock.
+
+- **Registering an event listener never subscribed to anything.**
+  `EventEmitter._subscribe` called the coroutine function `subscribe()` and
+  discarded the coroutine — "coroutine was never awaited" — and the deferral
+  its docstring described did not exist either, because nothing recorded the
+  name and `start()` never looked. Channels registered before the loop exists
+  are now subscribed by `start()`.
+
+- **Reading a cache key extended its life.** `RedisCache.get()` refreshed the
+  TTL on every read, and a `None` TTL resolves to `default_ttl` — so an entry
+  written with `ttl=1` had its expiry pushed out to the backend default the
+  moment anything read it. Only entries written with `sliding=True` are
+  refreshed now.
+
+- **A `sliding=True` value read back as its internal wrapper**, i.e.
+  `{"_value": ..., "_sliding": True, ...}` instead of the value stored.
+
+And, separately:
+
+- **Session settings were accepted and silently ignored.** `SessionConfig` took
+  `**kwargs` and merged them unchecked, and `SessionMiddleware` forwarded its
+  keyword arguments to `BaseMiddleware`, which accepts anything and reads none
+  of it. Passing `cookie_secure=False` — the name the documentation used — left
+  the real `session_cookie_secure` at `True`, so the cookie went out marked
+  `Secure` and browsers stopped returning it over plain HTTP. Sessions did
+  nothing at all in local development, with no error to point at.
+
+  Unknown settings now raise a `TypeError` naming the closest real setting, and
+  settings passed to `SessionMiddleware` reach the configuration. Reading an
+  attribute that is not a setting raises `AttributeError` rather than returning
+  `None`.
+
+- **`SessionConfig(manager=...)` was a documented setting that nothing read.**
+  Only `SessionMiddleware(manager=...)` had any effect. The config's value is
+  now used when the middleware is not given one, and passing a class where an
+  instance is required raises with the correct form.
+
+- **`import sillo` depended on import order.** `sillo/middleware/__init__.py`
+  imported `sillo.security`, which imported `BaseMiddleware` back from the
+  partially-initialised package. It worked only because the local import
+  happened to come first; sorting those two lines raised `ImportError`.
+  Security modules now import from `sillo.middleware.base` directly.
+
+### Changed
+
+- **CI runs Redis.** `run-tests.yaml` gets a Redis service container and fails
+  if the Redis tests report themselves as skipped, since a skip is exactly the
+  failure the job exists to prevent.
+
+- **CI runs `ruff check`.** It never had; only `ruff format` ran, so 2991
+  findings had accumulated. 2693 were mechanical and are fixed. The remainder
+  are listed in `[tool.ruff.lint] ignore` in `pyproject.toml` as a named
+  backlog rather than a blanket exemption.
+
+- **`target-version` is `py310`, matching `requires-python`.** It said `py38`,
+  four releases below anything this package installs on, which alone produced
+  442 findings demanding `from __future__ import annotations` for syntax every
+  supported version understands.
+
+- `ruff` and `ty` are upper-bounded. Both are pre-1.0 and gate CI, so on a
+  floor constraint an upstream release turned the build red with no change
+  here.
+
+- `actions/setup-python` is v5 across all workflows.
+
+## Released
+
+Releases up to `0.0.1a14` predate this file; see the git history.
+
+Note that `0.0.1a7` and earlier fail on `import sillo` unless the `record`
+extra is installed, because the import chain reached `tortoise` at module
+scope. `0.0.1a6` is yanked; the others are not.

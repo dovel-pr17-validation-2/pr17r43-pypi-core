@@ -1,0 +1,263 @@
+---
+import SidebarSublist from './parts/SidebarSublist.astro';
+import SocialIcons from './SocialIcons.astro';
+import ThemeSelect from './ThemeSelect.astro';
+import type { StarlightRouteData } from '@astrojs/starlight/route-data';
+
+const { sidebar } = Astro.locals.starlightRoute;
+
+/** Filter sidebar groups to only show entries relevant to the current URL section. */
+function filterSidebar(sidebar: StarlightRouteData['sidebar'], pathname: string) {
+    const locale = Astro.currentLocale;
+    // Strip Astro base path so route-aware filtering uses the actual content path
+    const base = import.meta.env.BASE_URL;
+    const pathWithoutBase = pathname.startsWith(base) ? pathname.slice(base.length) : pathname;
+    const pathWithoutLocale = locale
+        ? pathWithoutBase.replace(new RegExp(`^/${locale}`), '') || '/'
+        : pathWithoutBase;
+    const section = pathWithoutLocale.split('/').filter(Boolean)[0];
+    const sectionPrefix = `/${section}/`;
+
+    return sidebar.filter((entry) => {
+        if (entry.type === 'link') {
+            return entry.href.startsWith(sectionPrefix);
+        }
+        // Group: show if any child link matches the current section
+        return entry.entries.some(
+            (link) => link.type === 'link' && link.href.startsWith(sectionPrefix)
+        );
+    });
+}
+
+const currentPath = Astro.url.pathname;
+const base = import.meta.env.BASE_URL;
+const pathWithoutBase = currentPath.startsWith(base) ? currentPath.slice(base.length) : currentPath;
+const isRoot = pathWithoutBase === '/' || pathWithoutBase === '';
+const filteredSidebar = isRoot ? sidebar : filterSidebar(sidebar, currentPath);
+---
+
+<div class="sidebar">
+    <div class="sidebar-border-gradient"></div>
+    <div class="container-sidebar">
+        <div class="sidebar-entries">
+            <span class="sidebar-marker" aria-hidden="true"></span>
+            <SidebarSublist sublist={filteredSidebar} />
+        </div>
+    </div>
+    <footer class="sidebar-footer">
+        <SocialIcons />
+        <ThemeSelect />
+    </footer>
+</div>
+
+<style>
+    .sidebar {
+        scrollbar-width: none;
+        overflow: hidden;
+        height: 100%;
+        position: relative;
+        display: flex;
+        flex-direction: column;
+    }
+
+    .sidebar-footer {
+        flex-shrink: 0;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        gap: calc(var(--spacing) * 2);
+        padding: calc(var(--spacing) * 3) 0 calc(var(--spacing) * 4);
+        margin: 0 2rem;
+        border-top: 1px solid color-mix(in oklab, var(--border) 60%, transparent);
+    }
+
+    .sidebar-border-gradient {
+        position: absolute;
+        top: 0rem;
+        right: 0.5rem;
+        bottom: 0;
+        width: 1px;
+        background: linear-gradient(to bottom, transparent 0%, var(--border) 50%, transparent 100%);
+        display: none;
+        z-index: 1;
+    }
+
+    @media (min-width: 1024px) {
+        .sidebar-border-gradient {
+            display: flex;
+        }
+    }
+
+
+
+    .container-sidebar {
+        flex-direction: column;
+        display: flex;
+        overflow: auto;
+        scrollbar-width: none;
+        flex: 1;
+        min-height: 0;
+        padding-top: calc(var(--spacing) * 6);
+        padding-right: calc(var(--spacing) * 6);
+        padding-left: calc(var(--spacing) * 2);
+        margin: 0 2rem;
+    }
+
+    .sidebar-entries {
+        /*
+         * Positioned so the marker measures against this element: every link's
+         * offsetParent chain stops here, which makes its offset independent of
+         * how far the sidebar happens to be scrolled.
+         */
+        position: relative;
+        display: flex;
+        flex-direction: column;
+        gap: calc(var(--spacing) * 7);
+        padding-bottom: calc(var(--spacing) * 16);
+
+        --sidebar-rail-inset: calc(var(--spacing) * 3.5);
+    }
+
+    /*
+     * One marker for the whole sidebar rather than a border on each link: it
+     * slides between rows, which reads as a single object moving instead of two
+     * separate things blinking on and off.
+     */
+    .sidebar-marker {
+        position: absolute;
+        left: 0;
+        top: 0;
+        width: 2px;
+        border-radius: 2px;
+        background: var(--sidebar-marker-color, var(--foreground));
+        box-shadow: 0 0 12px
+            color-mix(in srgb, var(--sidebar-marker-color, var(--foreground)) 55%, transparent);
+        height: var(--marker-height, 0px);
+        transform: translateY(var(--marker-top, 0px));
+        opacity: 0;
+        pointer-events: none;
+        z-index: 1;
+    }
+
+    .sidebar-entries[data-marker] .sidebar-marker {
+        opacity: 1;
+    }
+
+    /* Hovering a different page previews where the marker would land. */
+    .sidebar-entries[data-marker='hover'] .sidebar-marker {
+        opacity: 0.55;
+    }
+
+    /*
+     * Transitions are enabled only after the first measurement, so the marker
+     * appears already sitting on the current page instead of sliding down from
+     * the top of the sidebar on every page load.
+     */
+    .sidebar-entries[data-marker-ready] .sidebar-marker {
+        transition:
+            transform 0.26s cubic-bezier(0.4, 0, 0.2, 1),
+            height 0.26s cubic-bezier(0.4, 0, 0.2, 1),
+            opacity 0.2s ease;
+    }
+
+    @media (prefers-reduced-motion: reduce) {
+        .sidebar-entries[data-marker-ready] .sidebar-marker {
+            transition: opacity 0.2s ease;
+        }
+    }
+
+    :global(.sidebar) .container-sidebar {
+        scroll-behavior: auto;
+    }
+
+    @media (min-width: 1024px) {
+        .container-sidebar {
+            max-height: none;
+        }
+    }
+</style>
+
+<script>
+    function scrollSidebarToActiveLink() {
+        const container = document.querySelector('.sidebar .container-sidebar');
+        const activeLink = container?.querySelector<HTMLAnchorElement>('[aria-current="page"]');
+        if (!activeLink || !container) return;
+
+        activeLink.scrollIntoView({ block: 'center', behavior: 'instant' });
+    }
+
+    /** Cleanup for the listeners the previous page's marker registered. */
+    let teardownMarker: (() => void) | null = null;
+
+    function setupSidebarMarker() {
+        teardownMarker?.();
+        teardownMarker = null;
+
+        const entries = document.querySelector<HTMLElement>('.sidebar .sidebar-entries');
+        const marker = entries?.querySelector<HTMLElement>('.sidebar-marker');
+        if (!entries || !marker) return;
+
+        const currentLink = () =>
+            entries.querySelector<HTMLAnchorElement>('.entry-link[aria-current="page"]');
+
+        /**
+         * Distance from the top of `root`, walking offsetParent rather than
+         * calling getBoundingClientRect. The rect is viewport-relative, so
+         * inside a scrolling sidebar it changes as the user scrolls and the
+         * marker would drift; offsets do not move.
+         */
+        function offsetWithin(element: HTMLElement, root: HTMLElement) {
+            let top = 0;
+            let node: HTMLElement | null = element;
+            while (node && node !== root) {
+                top += node.offsetTop;
+                node = node.offsetParent as HTMLElement | null;
+            }
+            return top;
+        }
+
+        function moveTo(link: HTMLElement | null, settled: boolean) {
+            if (!link) {
+                entries!.removeAttribute('data-marker');
+                return;
+            }
+            marker!.style.setProperty('--marker-top', `${offsetWithin(link, entries!)}px`);
+            marker!.style.setProperty('--marker-height', `${link.offsetHeight}px`);
+            entries!.setAttribute('data-marker', settled ? 'active' : 'hover');
+        }
+
+        const settle = () => moveTo(currentLink(), true);
+
+        const onPointerOver = (event: PointerEvent) => {
+            const link = (event.target as Element | null)?.closest<HTMLElement>('.entry-link');
+            if (link) moveTo(link, link.matches('[aria-current="page"]'));
+        };
+
+        settle();
+        // One frame later, so the initial placement is not animated.
+        requestAnimationFrame(() => entries.setAttribute('data-marker-ready', ''));
+
+        entries.addEventListener('pointerover', onPointerOver);
+        entries.addEventListener('pointerleave', settle);
+
+        // Wrapping labels change row heights, so a width change moves rows.
+        const observer = new ResizeObserver(settle);
+        observer.observe(entries);
+
+        teardownMarker = () => {
+            entries.removeEventListener('pointerover', onPointerOver);
+            entries.removeEventListener('pointerleave', settle);
+            observer.disconnect();
+        };
+    }
+
+    // Run on initial page load
+    scrollSidebarToActiveLink();
+    setupSidebarMarker();
+
+    // Run after Astro view transitions
+    document.addEventListener('astro:after-swap', () => {
+        scrollSidebarToActiveLink();
+        setupSidebarMarker();
+    });
+</script>

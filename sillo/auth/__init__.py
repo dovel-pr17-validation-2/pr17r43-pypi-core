@@ -1,0 +1,69 @@
+"""Authentication package for the Sillo framework.
+
+This package provides a comprehensive authentication system including
+JWT-based authentication, session-based authentication, and API key
+authentication backends. It exposes middleware, a route-level gate, and
+utility functions for securing application endpoints and managing user
+identity.
+
+Routes are protected by passing :class:`useAuth` as a route's ``auth``
+argument::
+
+    @app.get("/profile", auth=useAuth())
+    @app.get("/admin", auth=useAuth(schemes=["bearerAuth"]))
+    @app.get("/users", auth=useAuth(permissions=["read:users"]))
+
+Attributes:
+    AuthenticationMiddleware: ASGI middleware that performs authentication
+        on every incoming request using configured backends.
+    APIKeyAuthBackend: Authentication backend that validates API keys
+        sent via HTTP headers.
+    JWTAuthBackend: Authentication backend that validates JSON Web Tokens.
+    create_jwt: Helper function to generate a signed JWT token.
+    decode_jwt: Helper function to decode and verify a JWT token.
+    useAuth: Route-level authentication and authorisation gate.
+    BaseUser: Base user model class for authentication identities.
+    SimpleUser: Lightweight user representation for common use cases.
+"""
+
+from sillo.helpers.lazy import deferred
+from sillo.users import BaseUser, SimpleUser
+
+from .backend import AuthenticationBackend
+from .middleware import AuthenticationMiddleware
+from .use_auth import useAuth
+
+# The session and API-key backends define Tortoise models, and the JWT one
+# needs PyJWT. All three used to be imported here, which meant `import sillo`
+# — this package is reached from the exception handler — required the `record`
+# and `jwt` extras that are supposed to be optional. They load on first use
+# instead; the import paths and __all__ are unchanged.
+__getattr__ = deferred(
+    __name__,
+    {
+        "apikey": ".apikey",
+        "jwt_auth": ".jwt_auth",
+        "session_auth": ".session_auth",
+        "APIKeyAuthBackend": ".apikey",
+        "JWTAuthBackend": ".jwt_auth",
+        "SessionAuthBackend": ".session_auth",
+        "create_jwt": ".jwt_auth",
+        "decode_jwt": ".jwt_auth",
+    },
+)
+
+__all__ = [
+    "APIKeyAuthBackend",
+    "AuthenticationBackend",
+    "AuthenticationMiddleware",
+    "BaseUser",
+    "JWTAuthBackend",
+    "SessionAuthBackend",
+    "SimpleUser",
+    "apikey",
+    "create_jwt",
+    "decode_jwt",
+    "jwt_auth",
+    "session_auth",
+    "useAuth",
+]

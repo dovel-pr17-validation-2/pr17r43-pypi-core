@@ -1,0 +1,89 @@
+---
+/**
+ * Puts the unreleased-version notice above the prose, then hands off to the
+ * theme's own MarkdownContent.
+ *
+ * A version marked `preview` in src/versions.mjs documents code that is not on
+ * PyPI yet. The notice used to repeat on every page of that version, which
+ * turned into noise once the manual had more than a couple of pages — so it
+ * now shows once, on the manual's own front door (the "first intro page"),
+ * which is where someone arrives from the switcher or a bare `/v1.0/` link
+ * and has not seen it yet. The "preview" flag beside the logo in the nav (see
+ * `Header.astro`) is what keeps the rest of the pages honest about the
+ * version without repeating the full notice on each one.
+ *
+ * It sits inside MarkdownContent rather than above the title because this is
+ * the one wrapper that renders exactly once per page, on every template.
+ */
+import ThemeMarkdownContent from 'lucode-starlight/components/overrides/MarkdownContent.astro';
+import { VERSIONS, STABLE_VERSION, routeParts } from '../versions.mjs';
+
+const BASE = import.meta.env.BASE_URL.replace(/\/$/, '');
+const INTRO_PAGE = 'guides/introduction/';
+
+const pathname = Astro.url.pathname;
+const withoutBase = BASE && pathname.startsWith(BASE) ? pathname.slice(BASE.length) : pathname;
+const { version, rest } = routeParts(withoutBase);
+const isIntroPage = rest === INTRO_PAGE;
+
+const stable = VERSIONS.find((entry) => entry.slug === STABLE_VERSION);
+/* The same page in the released version, which is what someone who landed here
+   by accident actually wanted. */
+const stableHref = `${BASE}/${STABLE_VERSION}/${rest || INTRO_PAGE}`;
+---
+
+<ThemeMarkdownContent>
+    {
+        version?.preview && isIntroPage && (
+            <aside class="version-notice" aria-label="Version notice">
+                <p>
+                    This is the <strong>{version.label}</strong> documentation, a preview of a
+                    release that has not shipped yet. The API it describes is not on PyPI and can
+                    still change.
+                </p>
+                <p>
+                    Reading about the version you have installed?{' '}
+                    <a href={stableHref}>Switch to {stable?.label}</a>.
+                </p>
+            </aside>
+        )
+    }
+    <slot />
+</ThemeMarkdownContent>
+
+<style>
+    .version-notice {
+        margin-bottom: calc(var(--spacing) * 8);
+        padding: calc(var(--spacing) * 4);
+        border: 1px solid color-mix(in oklab, var(--sillo-border) 100%, transparent);
+        /*
+         * A left rule rather than a tinted panel: the notice repeats on every
+         * page in the version, and a full-colour box that loud would compete
+         * with the page's own callouts every time.
+         */
+        border-left: 2px solid color-mix(in oklab, var(--foreground) 45%, transparent);
+        border-radius: calc(var(--spacing) * 1.5);
+        background: color-mix(in oklab, var(--foreground) 3%, transparent);
+        font-size: 0.875rem;
+        line-height: 1.6;
+        color: var(--muted-foreground);
+    }
+
+    .version-notice p {
+        margin: 0;
+    }
+
+    .version-notice p + p {
+        margin-top: calc(var(--spacing) * 2);
+    }
+
+    .version-notice strong {
+        color: var(--foreground);
+        font-variant-numeric: tabular-nums;
+    }
+
+    .version-notice a {
+        color: var(--foreground);
+        text-underline-offset: 0.2em;
+    }
+</style>

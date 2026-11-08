@@ -1,0 +1,498 @@
+"""
+Tests for exception handler integration with middleware and other components
+"""
+
+from typing import Callable
+
+import pytest
+
+from sillo import SilloApp
+from sillo import json
+from sillo.exceptions import HTTPException
+from sillo.core.http import HttpContext
+from sillo.core.routing import Router
+from sillo.testclient import TestClient
+
+# ========== Exception Handler with Middleware Integration ==========
+
+
+def test_exception_handler_with_middleware(
+    test_client_factory: Callable[[SilloApp], TestClient],
+):
+    """Test exception handler working with middleware"""
+    app = SilloApp()
+
+    execution_log = []
+
+    class CustomError(Exception):
+        pass
+
+    async def logging_middleware(ctx: HttpContext, call_next):
+        execution_log.append("middleware_before")
+        try:
+            response = await call_next()
+        except CustomError:
+            execution_log.append("middleware_caught")
+            raise
+        finally:
+            execution_log.append("middleware_after")
+        return response
+
+    async def error_handler(ctx: HttpContext, exc: CustomError):
+        execution_log.append("error_handler")
+        return json({"error": str(exc)}).status(400)
+
+    app.use(logging_middleware)
+    app.add_exception_handler(CustomError, error_handler)
+
+    @app.get("/test")
+    async def handler(ctx: HttpContext):
+        execution_log.append("handler")
+        raise CustomError("Test error")
+
+    with test_client_factory(app) as client:
+        resp = client.get("/test")
+        assert resp.status_code == 400
+        assert "middleware_before" in execution_log
+        assert "handler" in execution_log
+        assert "error_handler" in execution_log
+
+
+def test_exception_handler_middleware_order(
+    test_client_factory: Callable[[SilloApp], TestClient],
+):
+    """Test exception handler execution order with multiple middleware"""
+    app = SilloApp()
+
+    execution_order = []
+
+    class TestError(Exception):
+        pass
+
+    async def middleware_1(ctx: HttpContext, call_next):
+        execution_order.append("m1_before")
+        response = await call_next()
+        execution_order.append("m1_after")
+        return response
+
+    async def middleware_2(ctx: HttpContext, call_next):
+        execution_order.append("m2_before")
+        response = await call_next()
+        execution_order.append("m2_after")
+        return response
+
+    async def error_handler(ctx: HttpContext, exc: TestError):
+        execution_order.append("error_handler")
+        return json({"error": "handled"}, status_code=500)
+
+    app.use(middleware_1)
+    app.use(middleware_2)
+    app.add_exception_handler(TestError, error_handler)
+
+    @app.get("/test")
+    async def handler(ctx: HttpContext):
+        execution_order.append("handler")
+        raise TestError()
+
+    with test_client_factory(app) as client:
+        resp = client.get("/test")
+        assert "error_handler" in execution_order
+
+
+def test_exception_handler_middleware_state_access(
+    test_client_factory: Callable[[SilloApp], TestClient],
+):
+    """Test exception handler accessing state set by middleware"""
+    app = SilloApp()
+
+    class AuthError(Exception):
+        pass
+
+    async def auth_middleware(ctx: HttpContext, call_next):
+        ctx.state.user_id = "user-456"
+        ctx.state.authenticated = True
+        response = await call_next()
+        return response
+
+    async def auth_error_handler(ctx: HttpContext, exc: AuthError):
+        user_id = getattr(ctx.state, "user_id", None)
+        return json({"error": str(exc), "user_id": user_id}, status_code=403)
+
+    app.use(auth_middleware)
+    app.add_exception_handler(AuthError, auth_error_handler)
+
+    @app.get("/test")
+    async def handler(ctx: HttpContext):
+        raise AuthError("Insufficient permissions")
+
+    with test_client_factory(app) as client:
+        resp = client.get("/test")
+        assert resp.json()["user_id"] == "user-456"
+
+
+# ========== Exception Handler with Router Integration ==========
+
+
+def test_exception_handler_with_nested_routers(
+    test_client_factory: Callable[[SilloApp], TestClient],
+):
+    """Test exception handler with nested routers"""
+    app = SilloApp()
+    parent_router = Router(prefix="/api")
+    child_router = Router(prefix="/child")
+
+    class RouterError(Exception):
+        pass
+
+    async def router_error_handler(
+        ctx: HttpContext, exc: RouterError
+    ):
+        return json({"error": "Router error"}).status(400)
+
+    app.add_exception_handler(RouterError, router_error_handler)
+
+    @child_router.get("/test")
+    async def handler(ctx: HttpContext):
+        raise RouterError("Error in nested router")
+
+    parent_router.mount_router(child_router)
+    app.mount_router(parent_router)
+
+    with test_client_factory(app) as client:
+        resp = client.get("/api/child/test")
+        assert resp.status_code == 400
+
+
+# ========== Exception Handler with Different HTTP Methods ==========
+
+
+def test_exception_handler_different_methods(
+    test_client_factory: Callable[[SilloApp], TestClient],
+):
+    """Test exception handler works with different HTTP methods"""
+    app = SilloApp()
+
+    class MethodError(Exception):
+        pass
+
+    async def method_error_handler(
+        ctx: HttpContext, exc: MethodError
+    ):
+        return json({"error": str(exc), "method": ctx.method}, status_code=400)
+
+    app.add_exception_handler(MethodError, method_error_handler)
+
+    @app.get("/test")
+    async def get_handler(ctx: HttpContext):
+        raise MethodError("GET error")
+
+    @app.post("/test")
+    async def post_handler(ctx: HttpContext):
+        raise MethodError("POST error")
+
+    @app.put("/test")
+    async def put_handler(ctx: HttpContext):
+        raise MethodError("PUT error")
+
+    with test_client_factory(app) as client:
+        resp_get = client.get("/test")
+        assert resp_get.json()["method"] == "GET"
+
+        resp_post = client.post("/test")
+        assert resp_post.json()["method"] == "POST"
+
+        resp_put = client.put("/test")
+        assert resp_put.json()["method"] == "PUT"
+
+
+# ========== Exception Handler with Query Parameters ==========
+
+
+def test_exception_handler_with_query_params(
+    test_client_factory: Callable[[SilloApp], TestClient],
+):
+    """Test exception handler accessing query parameters"""
+    app = SilloApp()
+
+    class QueryError(Exception):
+        pass
+
+    async def query_error_handler(
+        ctx: HttpContext, exc: QueryError
+    ):
+        page = ctx.query_params.get("page", "1")
+        return json({"error": str(exc), "page": page}, status_code=400)
+
+    app.add_exception_handler(QueryError, query_error_handler)
+
+    @app.get("/items")
+    async def handler(ctx: HttpContext):
+        raise QueryError("Invalid query")
+
+    with test_client_factory(app) as client:
+        resp = client.get("/items?page=5")
+        assert resp.json()["page"] == "5"
+
+
+# ========== Exception Handler with Path Parameters ==========
+
+
+def test_exception_handler_with_path_params(
+    test_client_factory: Callable[[SilloApp], TestClient],
+):
+    """Test exception handler accessing path parameters"""
+    app = SilloApp()
+
+    class ItemNotFoundError(Exception):
+        pass
+
+    async def item_not_found_handler(
+        ctx: HttpContext, exc: ItemNotFoundError
+    ):
+        item_id = ctx.path_params.get("item_id")
+        return json({"error": "Item not found", "item_id": item_id}, status_code=404)
+
+    app.add_exception_handler(ItemNotFoundError, item_not_found_handler)
+
+    @app.get("/items/{item_id}")
+    async def handler(ctx: HttpContext, item_id):
+        raise ItemNotFoundError()
+
+    with test_client_factory(app) as client:
+        resp = client.get("/items/123")
+        assert resp.json()["item_id"] == "123"
+
+
+# ========== Exception Handler with HttpContext Body ==========
+
+
+def test_exception_handler_with_request_body(
+    test_client_factory: Callable[[SilloApp], TestClient],
+):
+    """Test exception handler that can access request body"""
+    app = SilloApp()
+
+    class ValidationError(Exception):
+        pass
+
+    async def validation_error_handler(
+        ctx: HttpContext, exc: ValidationError
+    ):
+        # Note: In real scenarios, body might already be consumed
+        return json(
+            {"error": "Validation failed", "message": str(exc), "path": ctx.path},
+            status_code=422,
+        )
+
+    app.add_exception_handler(ValidationError, validation_error_handler)
+
+    @app.post("/data")
+    async def handler(ctx: HttpContext):
+        raise ValidationError("Invalid data format")
+
+    with test_client_factory(app) as client:
+        resp = client.post("/data", json={"key": "value"})
+        assert resp.status_code == 422
+        assert "Invalid data format" in resp.json()["message"]
+
+
+# ========== Exception Handler with Headers ==========
+
+
+def test_exception_handler_with_request_headers(
+    test_client_factory: Callable[[SilloApp], TestClient],
+):
+    """Test exception handler accessing request headers"""
+    app = SilloApp()
+
+    class HeaderError(Exception):
+        pass
+
+    async def header_error_handler(
+        ctx: HttpContext, exc: HeaderError
+    ):
+        api_key = ctx.headers.get("X-API-Key", "none")
+        return json({"error": str(exc), "api_key": api_key}, status_code=400)
+
+    app.add_exception_handler(HeaderError, header_error_handler)
+
+    @app.get("/test")
+    async def handler(ctx: HttpContext):
+        raise HeaderError("Header validation failed")
+
+    with test_client_factory(app) as client:
+        resp = client.get("/test", headers={"X-API-Key": "test-key"})
+        assert resp.json()["api_key"] == "test-key"
+
+
+# ========== Exception Handler with Cookies ==========
+
+
+def test_exception_handler_with_cookies(
+    test_client_factory: Callable[[SilloApp], TestClient],
+):
+    """Test exception handler accessing cookies"""
+    app = SilloApp()
+
+    class SessionError(Exception):
+        pass
+
+    async def session_error_handler(
+        ctx: HttpContext, exc: SessionError
+    ):
+        session_id = ctx.cookies.get("session_id", "none")
+        return json({"error": str(exc), "session_id": session_id}, status_code=401)
+
+    app.add_exception_handler(SessionError, session_error_handler)
+
+    @app.get("/test")
+    async def handler(ctx: HttpContext):
+        raise SessionError("Invalid session")
+
+    with test_client_factory(app) as client:
+        client.cookies.set("session_id", "abc123")
+        resp = client.get("/test")
+        assert resp.json()["session_id"] == "abc123"
+
+
+# ========== Exception Handler Priority Tests ==========
+
+
+def test_exception_handler_priority_specific_over_general(
+    test_client_factory: Callable[[SilloApp], TestClient],
+):
+    """Test that specific exception handlers take priority"""
+    app = SilloApp()
+
+    class BaseError(Exception):
+        pass
+
+    class SpecificError(BaseError):
+        pass
+
+    async def base_handler(ctx: HttpContext, exc: BaseError):
+        return json({"handler": "base"}, status_code=400)
+
+    async def specific_handler(
+        ctx: HttpContext, exc: SpecificError
+    ):
+        return json({"handler": "specific"}, status_code=422)
+
+    app.add_exception_handler(BaseError, base_handler)
+    app.add_exception_handler(SpecificError, specific_handler)
+
+    @app.get("/specific")
+    async def specific_route(ctx: HttpContext):
+        raise SpecificError()
+
+    @app.get("/base")
+    async def base_route(ctx: HttpContext):
+        raise BaseError()
+
+    with test_client_factory(app) as client:
+        resp_specific = client.get("/specific")
+        assert resp_specific.json()["handler"] == "specific"
+
+        resp_base = client.get("/base")
+        assert resp_base.json()["handler"] == "base"
+
+
+# ========== Exception Handler with Complex Scenarios ==========
+
+
+def test_exception_handler_complex_scenario(
+    test_client_factory: Callable[[SilloApp], TestClient],
+):
+    """Test exception handler in complex scenario with middleware and routers"""
+    app = SilloApp()
+    router = Router(prefix="/api")
+
+    execution_log = []
+
+    class ComplexError(Exception):
+        pass
+
+    async def logging_middleware(ctx: HttpContext, call_next):
+        execution_log.append("middleware")
+        ctx.state.request_id = "req-123"
+        response = await call_next()
+        return response
+
+    async def complex_error_handler(
+        ctx: HttpContext, exc: ComplexError
+    ):
+        execution_log.append("error_handler")
+        request_id = getattr(ctx.state, "request_id", None)
+        return json(
+            {"error": str(exc), "request_id": request_id}, status_code=500
+        )
+
+    app.use(logging_middleware)
+    app.add_exception_handler(ComplexError, complex_error_handler)
+
+    @router.get("/test")
+    async def handler(ctx: HttpContext):
+        execution_log.append("handler")
+        raise ComplexError("Complex error occurred")
+
+    app.mount_router(router)
+
+    with test_client_factory(app) as client:
+        resp = client.get("/api/test")
+        assert resp.status_code == 500
+        data = resp.json()
+        assert data["request_id"] == "req-123"
+        assert "middleware" in execution_log
+        assert "handler" in execution_log
+        assert "error_handler" in execution_log
+
+
+def test_exception_handler_no_handler_defined(
+    test_client_factory: Callable[[SilloApp], TestClient],
+):
+    """Test behavior when no exception handler is defined for an error"""
+    app = SilloApp()
+
+    class UnhandledError(Exception):
+        pass
+
+    @app.get("/test")
+    async def handler(ctx: HttpContext):
+        raise UnhandledError("This error has no handler")
+
+    with test_client_factory(app) as client:
+        response = client.get("/test")
+        assert response.status_code != 200
+
+
+def test_exception_handler_with_successful_request(
+    test_client_factory: Callable[[SilloApp], TestClient],
+):
+    """Test that exception handler doesn't interfere with successful requests"""
+    app = SilloApp()
+
+    class TestError(Exception):
+        pass
+
+    async def test_error_handler(ctx: HttpContext, exc: TestError):
+        return json({"error": "handled"}).status(400)
+
+    app.add_exception_handler(TestError, test_error_handler)
+
+    @app.get("/success")
+    async def success_handler(ctx: HttpContext):
+        return json({"status": "ok"})
+
+    @app.get("/error")
+    async def error_handler(ctx: HttpContext):
+        raise TestError()
+
+    with test_client_factory(app) as client:
+        # Successful request should work normally
+        resp_success = client.get("/success")
+        assert resp_success.status_code == 200
+        assert resp_success.json()["status"] == "ok"
+
+        # Error request should be handled
+        resp_error = client.get("/error")
+        assert resp_error.status_code == 400
